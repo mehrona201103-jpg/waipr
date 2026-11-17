@@ -55,7 +55,7 @@ APK_DOWNLOAD_URL = (getattr(C, "APK_DOWNLOAD_URL", "") or "").strip()
 APK_BUTTON_TITLE = getattr(C, "APK_BUTTON_TITLE", "📥 Скачать игру (APK)")
 CHANNEL_USERNAME = (getattr(C, "CHANNEL_USERNAME", "") or "").lstrip("@")
 CHANNEL_ID = int(getattr(C, "CHANNEL_ID", 0) or 0)
-PREMIUM = bool(C.PREMIUM_EMOJI)
+PREMIUM = bool(getattr(C, "PREMIUM_EMOJI", False))
 DB_PATH = str(BASE / "orders.sqlite3")
 CATALOG = C.CATALOG
 

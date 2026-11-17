@@ -9,7 +9,7 @@ PAYMENT_DETAILS = "@mukhammad_im"
 STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 
 # 3. CryptoBot API Token (от @CryptoBot → Crypto Pay → Create App)
-CRYPTOBOT_TOKEN = "673280:AAOrQ04FmSYPVuYyCfbqamAyYu0QI3YHXsk"
+CRYPTOBOT_TOKEN = "673280:AAtKp0AfwtMHMgnOmxdkMxcaew5sUKyMLsi"
 
 # 4. Канал для обязательной подписки (без @)
 CHANNEL_USERNAME = "@waiprussia"
@@ -23,8 +23,11 @@ WEBAPP_PORT = 8080
 # 6. APK игры (прямой link на файл релиза GitHub)
 # Пример: https://github.com/USER/REPO/releases/download/v1.0/game.apk
 # latest:  https://github.com/USER/REPO/releases/latest/download/game.apk
-APK_DOWNLOAD_URL = "https://github.com/mehrona201103-jpg/waip/releases/download/waip/waiprussia.apk"
+APK_DOWNLOAD_URL = "https://github.com/USER/REPO/releases/latest/download/game.apk"
 APK_BUTTON_TITLE = "Скачать игру"
+
+# Премиум-эмодзи в сообщениях бота (обычно False)
+PREMIUM_EMOJI = False
 
 # 7. Курсы (цены в каталоге — в USD)
 # 1 USD = STARS_PER_USD Telegram Stars
