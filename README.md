@@ -64,3 +64,8 @@ pip install -r requirements.txt
 # config.py
 python3 main.py
 ```
+
+## Render
+- Start command: `python main.py`; порт берётся из переменной `PORT` автоматически.
+- Секреты задавай в Environment: `BOT_TOKEN`, `OWNER_ID`, `GAME_DB_PASSWORD` и т.д. (см. config.py).
+- Запускай ТОЛЬКО один экземпляр бота (иначе TelegramConflictError).

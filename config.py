@@ -1,22 +1,33 @@
-"""Настройки WAIP SHOP. Измени значения и сохрани файл."""
+"""Настройки WAIP SHOP. Измени значения и сохрани файл.
+
+Секреты лучше задавать переменными окружения (Render → Environment):
+BOT_TOKEN, OWNER_ID, CRYPTOBOT_TOKEN, WEBAPP_URL, GAME_DB_HOST, GAME_DB_PORT,
+GAME_DB_USER, GAME_DB_PASSWORD, GAME_DB_NAME. Значения ниже — запасные.
+"""
+import os
+
+def _env(name, default):
+    v = os.environ.get(name)
+    return v if v not in (None, "") else default
+
 
 # 1. Токен от @BotFather
-BOT_TOKEN = "8878110137:AAFZFjXNJMjRNe6uSVKU7gOrAwT4WgEFWo0"
-OWNER_ID = "9292798672"  # Telegram ID владельца бота
+BOT_TOKEN = _env("BOT_TOKEN", "8878110137:AAFZFjXNJMjRNe6uSVKU7gOrAwT4WgEFWo0")
+OWNER_ID = _env("OWNER_ID", "9292798672")  # Telegram ID владельца бота
 
 # 2. Username для подарков Stars (fallback, если invoice XTR недоступен)
 PAYMENT_DETAILS = "@mukhammad_im"
 STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 
 # 3. CryptoBot API Token (от @CryptoBot → Crypto Pay → Create App)
-CRYPTOBOT_TOKEN = "673280:AAtKp0AfwtMHMgnOmxdkMxcaew5sUKyMLsi"
+CRYPTOBOT_TOKEN = _env("CRYPTOBOT_TOKEN", "")
 
 # 4. Канал для обязательной подписки (без @)
-CHANNEL_USERNAME = "@waiprussia"
-CHANNEL_ID = -1004323576792
+CHANNEL_USERNAME = ""
+CHANNEL_ID = 0
 
 # 5. Web App — HTTPS URL (обязательно для Mini App)
-WEBAPP_URL = "https://waip.onrender.com"
+WEBAPP_URL = _env("WEBAPP_URL", "")
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = 8080
 
@@ -48,11 +59,11 @@ MONEY_MIN_USD = 1
 PASSWORD_HASH = "md5"
 
 # 9. MySQL игрового сервера
-GAME_DB_HOST = "178.130.53.37"
-GAME_DB_PORT = 3306
-GAME_DB_USER = "gs365018"
-GAME_DB_PASSWORD = "Zy1HZ8OiIVca"
-GAME_DB_NAME = "gs365018"
+GAME_DB_HOST = _env("GAME_DB_HOST", "178.130.53.37")
+GAME_DB_PORT = int(_env("GAME_DB_PORT", 3306))
+GAME_DB_USER = _env("GAME_DB_USER", "gs365018")
+GAME_DB_PASSWORD = _env("GAME_DB_PASSWORD", "Zy1HZ8OiIVca")
+GAME_DB_NAME = _env("GAME_DB_NAME", "gs365018")
 
 GAME_ACCOUNT_TABLE = "accounts"
 GAME_NICK_COLUMN = "name"

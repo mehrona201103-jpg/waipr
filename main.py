@@ -31,6 +31,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
+    LinkPreviewOptions,
     Message,
     PreCheckoutQuery,
     SuccessfulPayment,
@@ -50,7 +51,8 @@ STARS_USER = getattr(C, "STARS_GIFT_USERNAME", "mukhammad_im").lstrip("@")
 CRYPTOBOT_TOKEN = (getattr(C, "CRYPTOBOT_TOKEN", "") or "").strip()
 WEBAPP_URL = (getattr(C, "WEBAPP_URL", "") or "").strip().rstrip("/")
 WEBAPP_HOST = getattr(C, "WEBAPP_HOST", "0.0.0.0")
-WEBAPP_PORT = int(getattr(C, "WEBAPP_PORT", 8080) or 8080)
+# Render / Heroku и т.п. передают порт в переменной PORT
+WEBAPP_PORT = int(os.environ.get("PORT") or getattr(C, "WEBAPP_PORT", 8080) or 8080)
 APK_DOWNLOAD_URL = (getattr(C, "APK_DOWNLOAD_URL", "") or "").strip()
 APK_BUTTON_TITLE = getattr(C, "APK_BUTTON_TITLE", "📥 Скачать игру (APK)")
 CHANNEL_USERNAME = (getattr(C, "CHANNEL_USERNAME", "") or "").lstrip("@")
@@ -213,9 +215,9 @@ def grant_to_game(order: dict, cfg: GameConfig) -> str:
         connection = mysql.connector.connect(
             host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
             database=cfg.database, connection_timeout=10, allow_local_infile=False,
-            autocommit=False, use_pure=True, auth_plugin="mysql_native_password",
+            autocommit=False, use_pure=True,
         )
-        cur = connection.cursor()
+        cur = connection.cursor(buffered=True)
         cur.execute(
             """CREATE TABLE IF NOT EXISTS bot_donation_grants (
               order_id BIGINT NOT NULL PRIMARY KEY,
@@ -280,9 +282,9 @@ def account_exists(nickname: str, cfg: GameConfig) -> bool:
         conn = mysql.connector.connect(
             host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
             database=cfg.database, connection_timeout=7, allow_local_infile=False,
-            autocommit=True, use_pure=True, auth_plugin="mysql_native_password",
+            autocommit=True, use_pure=True,
         )
-        cur = conn.cursor()
+        cur = conn.cursor(buffered=True)
         table, nick = identifier(cfg.table), identifier(cfg.nickname_col)
         cur.execute(f"SELECT 1 FROM {table} WHERE {nick}=%s LIMIT 1", (nickname,))
         ok = cur.fetchone() is not None
@@ -304,9 +306,9 @@ def fetch_player(nickname: str, cfg: GameConfig) -> dict | None:
         conn = mysql.connector.connect(
             host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
             database=cfg.database, connection_timeout=7, allow_local_infile=False,
-            autocommit=True, use_pure=True, auth_plugin="mysql_native_password",
+            autocommit=True, use_pure=True,
         )
-        cur = conn.cursor(dictionary=True)
+        cur = conn.cursor(dictionary=True, buffered=True)
         table = identifier(cfg.table)
         nick = identifier(cfg.nickname_col)
         cols = ", ".join(
@@ -563,7 +565,19 @@ class OrderStorage:
     def get(self, order_id: int):
         return self._row(self.db.execute("SELECT * FROM orders WHERE id=?", (order_id,)))
 
+    def expire_unpaid(self, user_id: int) -> None:
+        """Отменяет брошенные неоплаченные заказы, чтобы они не блокировали новые."""
+        with self.db:
+            self.db.execute(
+                "UPDATE orders SET status='cancelled', updated_at=? WHERE telegram_id=? AND ("
+                "(status IN ('awaiting_stars','awaiting_receipt') AND receipt_file_id IS NULL "
+                " AND created_at < datetime('now','-15 minutes')) "
+                "OR (status='awaiting_crypto' AND created_at < datetime('now','-65 minutes')))",
+                (now(), user_id),
+            )
+
     def active(self, user_id: int):
+        self.expire_unpaid(user_id)
         return self._row(
             self.db.execute(
                 "SELECT * FROM orders WHERE telegram_id=? AND status IN "
@@ -602,6 +616,14 @@ class OrderStorage:
         """final_price — цена в USD (целое или дробное округляется до 2 знаков → cents/100).
         В БД price хранится как целое число Stars к оплате (USD * STARS_PER_USD).
         """
+        # Брошенный неоплаченный Stars-заказ не должен мешать новому
+        # (если по его счёту потом придёт оплата — она всё равно будет выдана)
+        with self.db:
+            self.db.execute(
+                "UPDATE orders SET status='cancelled', updated_at=? WHERE telegram_id=? "
+                "AND status='awaiting_stars' AND receipt_file_id IS NULL",
+                (now(), telegram_id),
+            )
         if self.active(telegram_id):
             raise ValueError("Есть незавершённый заказ")
         t = now()
@@ -640,7 +662,7 @@ class OrderStorage:
         try:
             cur = self.db.execute(
                 """UPDATE orders SET receipt_file_id=?,receipt_unique_id=?,receipt_kind=?,
-                 status='review',updated_at=? WHERE id=? AND telegram_id=? AND status='awaiting_receipt'""",
+                 status='review',updated_at=? WHERE id=? AND telegram_id=? AND status IN ('awaiting_receipt','awaiting_stars')""",
                 (file_id, unique_id, kind, now(), order_id, user_id),
             )
             self.db.commit()
@@ -717,6 +739,11 @@ class OrderStorage:
             "revenue": delivered["sum"],
             "by_status": data,
         }
+
+
+store = OrderStorage(DB_PATH)
+store.recover_stuck()
+dp = Dispatcher()  # ВАЖНО: должен создаваться ДО всех @dp.* декораторов
 
 
 # ─── UI ──────────────────────────────────────────────────────────────────────
@@ -915,7 +942,19 @@ async def fulfill_paid_order(bot: Bot, order_id: int, source: str = "pay") -> No
         result = await asyncio.to_thread(grant_to_game, order, game_config())
         store.delivered(order_id)
         if isinstance(result, str) and result.startswith("pwd:"):
-            await _notify_password(bot, order, result[4:])
+            try:
+                await _notify_password(bot, order, result[4:])
+            except Exception:
+                logging.exception("notify pwd")
+                try:
+                    await bot.send_message(
+                        OWNER_ID,
+                        f"Не удалось отправить пароль игроку (заказ #{order_id}). "
+                        f"Ник: <code>{escape(order['nickname'])}</code> "
+                        f"Пароль: <code>{escape(result[4:])}</code>",
+                    )
+                except Exception:
+                    pass
         else:
             try:
                 await bot.send_message(
@@ -934,7 +973,7 @@ async def fulfill_paid_order(bot: Bot, order_id: int, source: str = "pay") -> No
             )
         except Exception:
             pass
-    except GrantError as e:
+    except Exception as e:
         store.retry(order_id, str(e))
         try:
             await bot.send_message(
@@ -948,7 +987,21 @@ async def fulfill_paid_order(bot: Bot, order_id: int, source: str = "pay") -> No
 
 @dp.pre_checkout_query()
 async def on_pre_checkout(query: PreCheckoutQuery):
-    # Всегда подтверждаем — проверка заказа при successful_payment
+    payload = query.invoice_payload or ""
+    order = None
+    if payload.startswith("waip:"):
+        try:
+            order = store.get(int(payload.split(":", 1)[1]))
+        except ValueError:
+            order = None
+    if (
+        not order
+        or order["telegram_id"] != query.from_user.id
+        or order["status"] in ("delivered", "done", "rejected")
+        or query.currency != "XTR"
+    ):
+        await query.answer(ok=False, error_message="Заказ недействителен. Создай новый заказ.")
+        return
     await query.answer(ok=True)
 
 
@@ -967,6 +1020,18 @@ async def on_successful_payment(message: Message, bot: Bot):
         return
     if order["telegram_id"] != message.from_user.id:
         logging.warning("payment user mismatch order=%s", order_id)
+        return
+    if sp.currency != "XTR" or sp.total_amount < int(order["price"]):
+        logging.warning("payment amount mismatch order=%s paid=%s need=%s",
+                        order_id, sp.total_amount, order["price"])
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"Оплата заказа #{order_id} не совпала по сумме: "
+                f"{sp.total_amount} {sp.currency}, нужно {order['price']} XTR. Проверь вручную.",
+            )
+        except Exception:
+            pass
         return
     await fulfill_paid_order(bot, order_id, source="stars-xtr")
 
@@ -1011,7 +1076,7 @@ def mysql_probe(cfg: GameConfig, check_schema: bool = False) -> str:
             allow_local_infile=False, connection_timeout=7, autocommit=True,
         )
         try:
-            cur = connection.cursor()
+            cur = connection.cursor(buffered=True)
             cur.execute("SELECT 1")
             cur.fetchone()
             if check_schema:
@@ -1040,10 +1105,6 @@ def mysql_probe(cfg: GameConfig, check_schema: bool = False) -> str:
         raise GrantError(f"MySQL: {exc}") from exc
     return "ok" if check_schema else "connected"
 
-
-store = OrderStorage(DB_PATH)
-store.recover_stuck()
-dp = Dispatcher()
 
 waiting_for_nickname: dict[int, str] = {}   # product buy flow
 waiting_for_promo: dict[int, bool] = {}
@@ -1097,15 +1158,17 @@ def order_description(o: dict) -> str:
         f"Товар: <b>{escape(o['item_title'])}</b>\n"
         f"Ник: <code>{escape(o['nickname'])}</code>\n"
         f"TG ID: <code>{o['telegram_id']}</code>\n"
-        f"Сумма: <b>{o['price']} ₽</b>{promo}\n"
+        f"Сумма: <b>{o['price']} ★</b>{promo}\n"
         f"Оплата: {pay}\n"
         f"Статус: <code>{escape(o['status'])}</code>"
     )
 
 
-async def home(message: Message):
-    is_owner = message.from_user.id == OWNER_ID
-    is_mod = store.is_moderator(message.from_user.id)
+async def home(message: Message, uid: int | None = None):
+    # В callback message.from_user — это сам бот, поэтому uid передаём явно
+    uid = uid or message.from_user.id
+    is_owner = uid == OWNER_ID
+    is_mod = store.is_moderator(uid)
     await message.answer(
         f"<b>🛒 WAIP SHOP</b>\n\n"
         f"Магазин привилегий сервера.\n"
@@ -1115,8 +1178,8 @@ async def home(message: Message):
     )
 
 
-async def start_onboarding(message: Message, bot: Bot):
-    uid = message.from_user.id
+async def start_onboarding(message: Message, bot: Bot, uid: int | None = None):
+    uid = uid or message.from_user.id
     # Если WebApp настроен — ведём пользователя туда (подписка + ник + магазин внутри)
     if WEBAPP_URL:
         rows = [[InlineKeyboardButton(text="🛒 Открыть WAIP SHOP", web_app=WebAppInfo(url=WEBAPP_URL))]]
@@ -1146,7 +1209,7 @@ async def start_onboarding(message: Message, bot: Bot):
             f"Бот проверит, что такой аккаунт существует.",
         )
         return
-    await home(message)
+    await home(message, uid)
 
 
 # ─── Commands ────────────────────────────────────────────────────────────────
@@ -1166,7 +1229,7 @@ async def cancel_cmd(message: Message):
     waiting_register.discard(uid)
     admin_input.pop(uid, None)
     order = store.active(uid)
-    if order and order["status"] in ("awaiting_receipt", "awaiting_crypto"):
+    if order and order["status"] in ("awaiting_receipt", "awaiting_crypto", "awaiting_stars"):
         store.cancel(order["id"], uid)
         await message.answer(f"{em('check')} Заказ #{order['id']} отменён.", reply_markup=home_kb())
     else:
@@ -1200,17 +1263,18 @@ async def show_orders(message: Message, uid: int):
         st = {
             "delivered": "✅", "rejected": "❌", "cancelled": "🚫",
             "review": "⏳", "awaiting_receipt": "📷", "awaiting_crypto": "🪙",
+            "awaiting_stars": "✨",
             "processing": "⚙️",
         }.get(o["status"], "•")
-        lines.append(f"{st} <b>#{o['id']}</b> {escape(o['item_title'])} — {o['price']} ₽")
+        lines.append(f"{st} <b>#{o['id']}</b> {escape(o['item_title'])} — {o['price']}★")
         if o["status"] == "delivered":
             kb_rows.append((button(f"🔁 Повторить #{o['id']}", f"repeat:{o['id']}", "check"),))
     kb_rows.append((button("🏠 Меню", "home", "home"),))
     await message.answer("\n".join(lines), reply_markup=keyboard(*kb_rows))
 
 
-async def show_admin(message: Message):
-    is_owner = message.from_user.id == OWNER_ID
+async def show_admin(message: Message, uid: int | None = None):
+    is_owner = (uid or message.from_user.id) == OWNER_ID
     await message.answer(
         f"{em('settings')} <b>Панель WAIP SHOP</b>\n"
         f"{'Владелец' if is_owner else 'Модератор'}",
@@ -1218,12 +1282,12 @@ async def show_admin(message: Message):
     )
 
 
-async def show_admin_orders(message: Message, bot: Bot):
+async def show_admin_orders(message: Message, bot: Bot, uid: int | None = None):
     orders = store.pending()
     if not orders:
         await message.answer(
             "Новых чеков нет.",
-            reply_markup=admin_panel_kb(message.from_user.id == OWNER_ID),
+            reply_markup=admin_panel_kb((uid or message.from_user.id) == OWNER_ID),
         )
         return
     await message.answer(f"{em('card')} <b>Чеки на проверке: {len(orders)}</b>")
@@ -1253,7 +1317,7 @@ async def callback_check_sub(call: CallbackQuery, bot: Bot):
         )
         return
     if store.is_registered(call.from_user.id):
-        await home(call.message)
+        await home(call.message, call.from_user.id)
         return
     waiting_register.add(call.from_user.id)
     await call.message.answer(
@@ -1267,9 +1331,9 @@ async def callback_check_sub(call: CallbackQuery, bot: Bot):
 async def callback_home(call: CallbackQuery, bot: Bot):
     await call.answer()
     if not store.is_registered(call.from_user.id):
-        await start_onboarding(call.message, bot)
+        await start_onboarding(call.message, bot, call.from_user.id)
         return
-    await home(call.message)
+    await home(call.message, call.from_user.id)
 
 
 @dp.callback_query(F.data == "my")
@@ -1301,7 +1365,10 @@ async def callback_profile(call: CallbackQuery):
         if player:
             cfg = game_config()
             def g(col):
-                return player.get(col) or player.get(col.lower()) or "?"
+                v = player.get(col)
+                if v is None:
+                    v = player.get(col.lower())
+                return "?" if v is None else v
             text += (
                 f"<b>Данные с сервера (live):</b>\n"
                 f"⭐ Уровень: <b>{g(cfg.level_col)}</b>\n"
@@ -1366,7 +1433,7 @@ async def callback_buy(call: CallbackQuery):
         waiting_for_nickname[call.from_user.id] = code
         await call.answer()
         await call.message.answer(
-            f"{em('check')} <b>{escape(item['title'])}</b> — {item['price']} ₽\n\n"
+            f"{em('check')} <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n\n"
             "Отправь игровой ник:"
         )
         return
@@ -1376,7 +1443,7 @@ async def callback_buy(call: CallbackQuery):
     waiting_pay[call.from_user.id] = {"code": code, "nick": nick, "promo": promo}
     await call.answer()
     await call.message.answer(
-        f"{em('check')} <b>{escape(item['title'])}</b> — {item['price']} ₽\n"
+        f"{em('check')} <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n"
         f"Ник: <code>{escape(nick)}</code>\n\n"
         "Выбери способ оплаты:",
         reply_markup=pay_method_kb(code),
@@ -1406,7 +1473,7 @@ async def callback_pay_method(call: CallbackQuery):
         promo = store.get_promo(promo_code)
         if promo and (promo["max_uses"] == 0 or promo["used_count"] < promo["max_uses"]):
             discount = int(promo["percent"])
-            final_price = max(1, int(item["price"] * (100 - discount) / 100))
+            final_price = max(0.01, round(float(item["price"]) * (100 - discount) / 100, 2))
 
     try:
         order = store.create(
@@ -1437,11 +1504,11 @@ async def callback_pay_method(call: CallbackQuery):
             store.set_crypto_invoice(order["id"], invoice_id)
             await call.message.answer(
                 f"{em('crypto')} <b>Заказ #{order['id']}</b>\n"
-                f"{escape(item['title'])} — <b>{final_price} ₽</b>\n\n"
+                f"{escape(item['title'])} — <b>${final_price}</b>\n\n"
                 f"Оплати: {pay_url}\n\n"
                 f"После оплаты товар выдастся автоматически (до 1 мин).",
                 reply_markup=payment_kb(order["id"]),
-                disable_web_page_preview=True,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
         except Exception as e:
             logging.exception("crypto invoice")
@@ -1452,22 +1519,41 @@ async def callback_pay_method(call: CallbackQuery):
     extra = ""
     if item["kind"] == "password":
         extra = (
-            "\n\n⚠️ После оплаты и подтверждения бот сгенерирует <b>новый пароль</b> "
+            "\n\n⚠️ После оплаты бот сгенерирует <b>новый пароль</b> "
             "и пришлёт его тебе. Сразу смени его в игре."
         )
     if item["kind"] == "skin":
         extra = f"\n\nСкин ID: <code>{item['units']}</code>"
 
-    await call.message.answer(
-        f"{em('stars')} <b>Заказ #{order['id']}</b>\n"
-        f"{escape(item['title'])} — <b>{final_price} ₽</b>{extra}\n\n"
-        f"<b>Оплата Telegram Stars:</b>\n"
-        f"1. Открой <b>@{STARS_USER}</b>\n"
-        f"2. Отправь <b>подарок (Gift)</b> на сумму ≈ <b>{final_price} ₽</b>\n"
-        f"3. Скриншот отправки пришли <b>сюда</b>\n\n"
-        f"Чек проверит админ/модератор → товар выдастся автоматически.",
-        reply_markup=payment_kb(order["id"]),
-    )
+    stars = int(order["price"])
+    # Основной способ — нативный счёт Telegram Stars (XTR): оплата → авто-выдача
+    try:
+        await call.message.answer_invoice(
+            title=str(item["title"])[:32],
+            description=f"Заказ #{order['id']} · {data['nick']}"[:255],
+            payload=f"waip:{order['id']}",
+            currency="XTR",
+            prices=[LabeledPrice(label=str(item["title"])[:32], amount=stars)],
+        )
+        await call.message.answer(
+            f"{em('stars')} <b>Заказ #{order['id']}</b>\n"
+            f"{escape(item['title'])} — <b>${final_price}</b> = <b>{stars}★</b>{extra}\n\n"
+            f"Нажми «Заплатить» в счёте выше — товар выдастся автоматически.\n\n"
+            f"<i>Не получается? Отправь подарок на @{escape(STARS_USER)} "
+            f"на ≈{stars}★ и пришли скриншот сюда — чек проверит админ.</i>",
+            reply_markup=payment_kb(order["id"]),
+        )
+    except Exception:
+        logging.exception("send_invoice")
+        await call.message.answer(
+            f"{em('stars')} <b>Заказ #{order['id']}</b>\n"
+            f"{escape(item['title'])} — <b>{stars}★</b>{extra}\n\n"
+            f"1. Открой <b>@{escape(STARS_USER)}</b>\n"
+            f"2. Отправь <b>подарок (Gift)</b> на ≈ <b>{stars}★</b>\n"
+            f"3. Скриншот пришли <b>сюда</b>\n\n"
+            f"Чек проверит админ/модератор → товар выдастся автоматически.",
+            reply_markup=payment_kb(order["id"]),
+        )
 
 
 @dp.callback_query(F.data.startswith("cancel:"))
@@ -1506,7 +1592,7 @@ async def callback_repeat(call: CallbackQuery):
     waiting_pay[call.from_user.id] = {"code": code, "nick": old["nickname"], "promo": None}
     await call.answer()
     await call.message.answer(
-        f"🔁 <b>{escape(item['title'])}</b> — {item['price']} ₽\n"
+        f"🔁 <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n"
         f"Ник: <code>{escape(old['nickname'])}</code>\n\nВыбери оплату:",
         reply_markup=pay_method_kb(code),
     )
@@ -1524,10 +1610,10 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
     await call.answer()
 
     if action == "home":
-        await show_admin(call.message)
+        await show_admin(call.message, uid)
         return
     if action == "orders":
-        await show_admin_orders(call.message, bot)
+        await show_admin_orders(call.message, bot, uid)
         return
     if action == "stats":
         s = store.stats()
@@ -1535,10 +1621,10 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
             f"{em('card')} <b>Статистика</b>\n",
             f"Всего заказов: <b>{s['total_orders']}</b>",
             f"Выдано: <b>{s['delivered_count']}</b>",
-            f"Выручка: <b>{s['revenue']} ₽</b>\n",
+            f"Выручка: <b>{s['revenue']} ★</b>\n",
         ]
         for st, v in s["by_status"].items():
-            lines.append(f"• {st}: {v['count']} ({v['sum']} ₽)")
+            lines.append(f"• {st}: {v['count']} ({v['sum']}★)")
         await call.message.answer("\n".join(lines), reply_markup=admin_panel_kb(is_owner))
         return
 
@@ -1946,7 +2032,7 @@ async def text_handler(message: Message, bot: Bot):
         store.set_nickname(uid, nick)
         await message.answer(
             f"{em('check')} Ник: <code>{escape(nick)}</code>\n"
-            f"{escape(item['title'])} — {item['price']} ₽\n\nСпособ оплаты:",
+            f"{escape(item['title'])} — ${item['price']} / {usd_to_stars(item['price'])}★\n\nСпособ оплаты:",
             reply_markup=pay_method_kb(code),
         )
         return
@@ -1966,7 +2052,7 @@ async def receipt(message: Message, bot: Bot):
         return
 
     order = store.active(uid)
-    if not order or order["status"] != "awaiting_receipt":
+    if not order or order["status"] not in ("awaiting_receipt", "awaiting_stars"):
         await message.answer("Сначала создай заказ. Сейчас фото не к чему привязать.")
         return
     if message.photo:
@@ -2074,7 +2160,7 @@ async def main():
             "money_per_usd": MONEY_PER_USD,
             "money_min_usd": MONEY_MIN_USD,
             # True = после «Я отправил подарок» выдаём сразу (без ручного ok:)
-            "auto_grant_stars_gift": True,
+            "auto_grant_stars_gift": False,
             "asyncio": asyncio,
         }
         await start_web_server(ctx, WEBAPP_HOST, WEBAPP_PORT)
@@ -2092,6 +2178,10 @@ async def main():
     except Exception:
         logging.exception("WebApp server failed to start (бот продолжит работу без Mini App)")
 
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        logging.exception("delete_webhook")
     await dp.start_polling(bot)
 
 

@@ -467,10 +467,10 @@
           }, 900);
           return;
         }
-        if (data.status === "cancelled" || data.status === "failed") {
+        if (data.status === "cancelled" || data.status === "failed" || data.status === "rejected") {
           stopPoll();
           hide($("payWait"));
-          toast("Заказ отменён");
+          toast(data.status === "rejected" ? "Платёж не подтверждён" : "Заказ отменён");
         }
       } catch (_) {}
     };

@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import logging
+import math
+import re
+import time
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -17,6 +21,8 @@ def validate_init_data(init_data: str, bot_token: str) -> dict:
     if not init_data or not bot_token:
         raise ValueError("Нет initData — открой через кнопку бота")
     parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+    if len(init_data) > 8192:
+        raise ValueError("initData слишком длинный")
     received_hash = parsed.pop("hash", None)
     if not received_hash:
         raise ValueError("Нет hash")
@@ -25,6 +31,12 @@ def validate_init_data(init_data: str, bot_token: str) -> dict:
     calc = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(calc, received_hash):
         raise ValueError("Неверная подпись initData")
+    try:
+        auth_date = int(parsed.get("auth_date") or 0)
+    except ValueError:
+        auth_date = 0
+    if not auth_date or time.time() - auth_date > 24 * 3600:
+        raise ValueError("Сессия устарела — закрой и открой приложение заново")
     user_raw = parsed.get("user")
     if not user_raw:
         raise ValueError("Нет user в initData")
@@ -38,6 +50,13 @@ def create_app(ctx: dict) -> web.Application:
     app = web.Application(client_max_size=12 * 1024 * 1024)
     store = ctx["store"]
     bot_token = ctx["bot_token"]
+
+    async def read_json(request: web.Request) -> dict:
+        try:
+            data = await request.json()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def auth_user(request: web.Request) -> dict:
         init_data = request.headers.get("X-Telegram-Init-Data") or request.query.get("initData") or ""
@@ -147,12 +166,11 @@ def create_app(ctx: dict) -> web.Application:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=401)
         uid = int(user["id"])
-        body = await request.json()
+        body = await read_json(request)
         is_switch = bool(body.get("switch"))
         if not is_switch and not await check_subscribed(uid):
             return web.json_response({"error": "Сначала подпишись на канал"}, status=403)
         nick = (body.get("nickname") or "").strip()
-        import re
         if not re.fullmatch(r"[A-Za-z0-9_\[\]-]{3,24}", nick):
             return web.json_response({"error": "Неверный формат ника"}, status=400)
         exists = await ctx["asyncio"].to_thread(ctx["account_exists"], nick, ctx["get_game_config"]())
@@ -213,7 +231,7 @@ def create_app(ctx: dict) -> web.Application:
             auth_user(request)
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=401)
-        body = await request.json()
+        body = await read_json(request)
         code = (body.get("code") or "").strip()
         p = store.get_promo(code)
         if not p:
@@ -233,8 +251,10 @@ def create_app(ctx: dict) -> web.Application:
         nick = store.get_nickname(uid)
         if not nick:
             return web.json_response({"error": "Ник не привязан"}, status=400)
-        body = await request.json()
+        body = await read_json(request)
         product_id = body.get("product_id")
+        if not isinstance(product_id, str):
+            return web.json_response({"error": "Товар не найден"}, status=404)
         method = body.get("payment_method") or "stars"
         if method not in ("stars", "crypto"):
             return web.json_response({"error": "Неверный способ оплаты"}, status=400)
@@ -252,13 +272,15 @@ def create_app(ctx: dict) -> web.Application:
         if product_id == "money_custom":
             try:
                 usd = float(body.get("usd") or 0)
-                units = int(body.get("units") or 0)
             except (TypeError, ValueError):
                 return web.json_response({"error": "Неверная сумма"}, status=400)
-            if usd < money_min_usd:
+            if not math.isfinite(usd) or usd < money_min_usd:
                 return web.json_response({"error": f"Минимум ${money_min_usd}"}, status=400)
-            if units <= 0:
-                units = int(round(usd * money_per_usd))
+            if usd > 1000:
+                return web.json_response({"error": "Максимум $1000 за раз"}, status=400)
+            usd = round(usd, 2)
+            # Количество валюты считаем на сервере — клиенту не доверяем
+            units = int(round(usd * money_per_usd))
             item = {
                 "id": "money_custom",
                 "title": f"{units:,} игровой валюты".replace(",", " "),
@@ -284,7 +306,7 @@ def create_app(ctx: dict) -> web.Application:
             promo = store.get_promo(promo_code)
             if promo and (promo["max_uses"] == 0 or promo["used_count"] < promo["max_uses"]):
                 discount = int(promo["percent"])
-                final_usd = max(0.01, final_usd * (100 - discount) / 100)
+                final_usd = max(0.01, round(final_usd * (100 - discount) / 100, 2))
             else:
                 promo_code = None
 
@@ -333,7 +355,7 @@ def create_app(ctx: dict) -> web.Application:
                     await bot.send_message(
                         uid,
                         f"<b>Заказ #{order['id']}</b>\n"
-                        f"{item['title']}\n"
+                        f"{html.escape(str(item['title']))}\n"
                         f"К оплате: <b>{stars} Stars</b> (${final_usd})\n\n"
                         f"Отправь подарок (Gift) на <b>@{stars_user}</b> "
                         f"на сумму <b>{stars} Stars</b>.\n"
@@ -381,7 +403,7 @@ def create_app(ctx: dict) -> web.Application:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=401)
         uid = int(user["id"])
-        body = await request.json()
+        body = await read_json(request)
         try:
             oid = int(body.get("order_id") or 0)
         except (TypeError, ValueError):
@@ -393,7 +415,9 @@ def create_app(ctx: dict) -> web.Application:
             return web.json_response({"error": "Заказ не ждёт оплату"}, status=409)
 
         # Переводим в processing / auto-grant
-        auto = bool(ctx.get("auto_grant_stars_gift"))
+        # Нажатие кнопки «я отправил» НЕ доказывает оплату — только ручная проверка.
+        # (Настоящая оплата Stars выдаётся сама по successful_payment в боте.)
+        auto = False
         with store.db:
             store.db.execute(
                 "UPDATE orders SET status=?, updated_at=datetime('now') WHERE id=?",
@@ -450,8 +474,8 @@ def create_app(ctx: dict) -> web.Application:
                 await bot.send_message(
                     owner_id,
                     f"<b>Stars gift #{oid}</b>\n"
-                    f"{order['item_title']} · {order['price']} Stars\n"
-                    f"Ник: <code>{order['nickname']}</code>\n"
+                    f"{html.escape(order['item_title'])} · {order['price']} Stars\n"
+                    f"Ник: <code>{html.escape(order['nickname'])}</code>\n"
                     f"User: <code>{uid}</code>",
                     reply_markup=kb,
                 )
