@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>WAIP SHOP</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/webapp/style.css" />
+</head>
+<body>
+  <div class="bg-orb a"></div>
+  <div class="bg-orb b"></div>
+  <div class="bg-grid"></div>
+
+  <!-- ONBOARDING -->
+  <div id="onboard" class="screen">
+    <div class="logo-wrap">
+      <div class="logo-ring"></div>
+      <div class="logo">
+        <svg viewBox="0 0 48 48" class="ico-lg"><path d="M10 16h28l-2.5 22H12.5L10 16zm5-7h18l1.5 7H13.5L15 9z" fill="currentColor"/></svg>
+      </div>
+    </div>
+    <h1 class="title gradient-text">WAIP SHOP</h1>
+    <p class="subtitle" id="obStatus">Проверяем доступ…</p>
+    <div class="loader" id="obLoader"><span></span><span></span><span></span></div>
+    <div id="obActions" class="ob-actions hidden">
+      <a id="subLink" class="btn btn-primary" href="#" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" class="ico"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h12v2H4z" fill="currentColor"/></svg>
+        Подписаться на канал
+      </a>
+      <button id="btnCheckSub" class="btn btn-outline">Я подписался — проверить</button>
+    </div>
+    <div id="obNick" class="ob-nick hidden">
+      <p class="subtitle">Введи игровой ник<br><small>точно как в игре</small></p>
+      <input id="nickInput" class="input" placeholder="Ivan_Ivanov" maxlength="24" autocomplete="off" />
+      <button id="btnReg" class="btn btn-primary">Подтвердить ник</button>
+      <p id="nickErr" class="err"></p>
+    </div>
+  </div>
+
+  <!-- SHOP -->
+  <div id="shop" class="screen hidden">
+    <header class="top">
+      <div>
+        <div class="brand gradient-text">WAIP SHOP</div>
+        <div id="userChip" class="chip">—</div>
+      </div>
+      <button id="btnApk" class="btn-icon" title="Скачать APK" type="button">
+        <svg viewBox="0 0 24 24" class="ico"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M5 18v1a2 2 0 002 2h10a2 2 0 002-2v-1" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="catalog" type="button">
+        <svg viewBox="0 0 24 24" class="ico"><path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        Магазин
+      </button>
+      <button class="tab" data-tab="orders" type="button">
+        <svg viewBox="0 0 24 24" class="ico"><path d="M7 7h10v12H7V7zm2-3h6v3H9V4z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        Заказы
+      </button>
+      <button class="tab" data-tab="profile" type="button">
+        <svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        Профиль
+      </button>
+    </nav>
+
+    <!-- CATALOG -->
+    <section id="tab-catalog" class="panel active">
+      <div id="view-cats" class="view">
+        <p class="panel-hint">Выберите категорию</p>
+        <div id="catList" class="list stack"></div>
+      </div>
+
+      <div id="view-products" class="view hidden">
+        <button class="back-btn" id="backToCats" type="button">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          Назад
+        </button>
+        <h2 id="prodTitle" class="section-title"></h2>
+        <div id="prodList" class="list stack"></div>
+        <div id="moneyCustom" class="card custom-money hidden">
+          <p class="card-label">Своя сумма валюты</p>
+          <p class="rate-line" id="moneyRate">1 USD = 100 000 валюты · 1 USD = 50 Stars</p>
+          <div class="row-inputs">
+            <div class="field">
+              <label>Игровая валюта</label>
+              <input id="moneyUnits" class="input" type="number" min="100000" step="100000" placeholder="100000" />
+            </div>
+            <div class="field">
+              <label>USD</label>
+              <input id="moneyUsd" class="input" type="number" min="1" step="1" placeholder="1" />
+            </div>
+          </div>
+          <div class="price-preview" id="moneyPreview">—</div>
+          <button id="btnMoneyPay" class="btn btn-primary btn-block" type="button">Выбрать оплату</button>
+        </div>
+      </div>
+
+      <div id="view-pay" class="view hidden">
+        <button class="back-btn" id="backToProds" type="button">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+          Назад
+        </button>
+        <div class="card pay-card">
+          <div class="pay-item" id="payItemTitle">—</div>
+          <div class="pay-price" id="payItemPrice">—</div>
+          <p class="panel-hint">Способ оплаты</p>
+          <button id="payCrypto" class="pay-method" type="button">
+            <span class="pm-icon">
+              <svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" fill="none"/><path d="M8 12h8M12 8v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </span>
+            <span class="pm-body">
+              <strong>CryptoBot</strong>
+              <small>Автоматически · криптовалюта</small>
+            </span>
+          </button>
+          <button id="payStars" class="pay-method" type="button">
+            <span class="pm-icon">
+              <svg viewBox="0 0 24 24" class="ico"><path d="M12 3l2.4 7.2H22l-6 4.4 2.3 7.1L12 17.8 5.7 21.7 8 14.6 2 10.2h7.6L12 3z" fill="currentColor"/></svg>
+            </span>
+            <span class="pm-body">
+              <strong>Telegram Stars</strong>
+              <small id="payStarsHint">Оплата Stars на баланс бота</small>
+            </span>
+          </button>
+        </div>
+        <div id="starsGuide" class="card stars-guide hidden">
+          <h3>Оплата Telegram Stars</h3>
+          <p class="muted" id="sgNative">Откроется встроенная оплата Stars. Средства поступят на баланс бота автоматически.</p>
+          <div id="sgGift" class="hidden">
+            <ol>
+              <li>Открой профиль <b id="sgUser">@mukhammad_im</b></li>
+              <li>Отправь <b>подарок (Gift)</b> на сумму <b id="sgStars">0</b> Stars</li>
+              <li>Нажми «Я отправил подарок»</li>
+            </ol>
+            <p class="muted">Скриншоты не нужны. После подтверждения товар выдаётся автоматически.</p>
+            <button id="btnStarsDone" class="btn btn-primary btn-block" type="button">Я отправил подарок</button>
+            <button id="btnStarsOpen" class="btn btn-outline btn-block" type="button">Открыть профиль</button>
+          </div>
+          <button id="btnStarsPay" class="btn btn-primary btn-block" type="button">Оплатить Stars</button>
+        </div>
+        <div id="payWait" class="card pay-wait hidden">
+          <div class="loader"><span></span><span></span><span></span></div>
+          <p id="payWaitText">Ожидаем оплату…</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-orders" class="panel">
+      <div id="ordersList" class="list stack"></div>
+    </section>
+
+    <section id="tab-profile" class="panel">
+      <div class="card profile-card">
+        <div class="profile-row"><span>Ник</span><b id="pfNick">—</b></div>
+        <div class="profile-row"><span>Уровень</span><b id="pfLevel">—</b></div>
+        <div class="profile-row"><span>Админ</span><b id="pfAdmin">—</b></div>
+        <div class="profile-row"><span>Скин</span><b id="pfSkin">—</b></div>
+        <div class="profile-row"><span>Валюта</span><b id="pfMoney">—</b></div>
+      </div>
+      <div class="card account-switch">
+        <p class="card-label">Игровой аккаунт</p>
+        <p class="muted" id="switchHint">Можно выйти и привязать другой ник. Подписка не требуется.</p>
+        <button id="btnLogout" class="btn btn-outline btn-block" type="button">Выйти из аккаунта</button>
+        <div id="switchBox" class="switch-box hidden">
+          <input id="switchNick" class="input" placeholder="Новый ник" maxlength="24" autocomplete="off" />
+          <button id="btnSwitchIn" class="btn btn-primary btn-block" type="button">Войти</button>
+          <p id="switchErr" class="err"></p>
+        </div>
+      </div>
+      <div class="card rates-card">
+        <p class="card-label">Курсы</p>
+        <div class="profile-row"><span>1 USD</span><b id="pfStarsRate">50 Stars</b></div>
+        <div class="profile-row"><span>1 USD</span><b id="pfMoneyRate">100 000 валюты</b></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/webapp/app.js"></script>
+</body>
+</html>
