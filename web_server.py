@@ -14,6 +14,19 @@ from urllib.parse import parse_qsl
 
 from aiohttp import web
 
+from tenants import MAX_TENANTS_PER_USER, TenantError
+
+
+def _shade(hex_color: str, factor: float) -> str:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return "#%02x%02x%02x" % (int(r * factor), int(g * factor), int(b * factor))
+
+
+def _theme_css(hex_color: str) -> str:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return (f":root{{--purple:{hex_color};--purple2:{_shade(hex_color, 0.8)};"
+            f"--line:rgba({r},{g},{b},0.25);--glow:0 0 28px rgba({r},{g},{b},0.35)}}")
+
 WEBAPP_DIR = Path(__file__).resolve().parent / "webapp"
 
 
@@ -72,7 +85,7 @@ def create_app(ctx: dict) -> web.Application:
                     "title": p["title"],
                     "kind": p["kind"],
                     "units": p["units"],
-                    "price": float(store.get_price(p["id"])),
+                    "price": int(store.get_price(p["id"])),
                 })
             catalog[cat] = {
                 "title": sec["title"],
@@ -162,13 +175,12 @@ def create_app(ctx: dict) -> web.Application:
             "subscribed": subscribed,
             "channel_url": channel_url(),
             "catalog": live_catalog(),
-            "crypto_enabled": bool(ctx.get("cryptobot_token")),
-            "stars_user": ctx.get("stars_user") or "mukhammad_im",
+            "stars_user": ctx.get("stars_user") or "",
             "apk_url": ctx.get("apk_url") or None,
-            "stars_per_usd": int(ctx.get("stars_per_usd") or 50),
-            "money_per_usd": int(ctx.get("money_per_usd") or 100000),
-            "money_min_usd": float(ctx.get("money_min_usd") or 1),
+            "money_per_star": int(ctx.get("money_per_star") or 2000),
             "money_min_units": int(ctx.get("money_min_units") or 100000),
+            "can_create_tenant": bool(ctx.get("tenant_manager")),
+            "tenant_limit": MAX_TENANTS_PER_USER,
             **extras(uid),
         })
 
@@ -180,6 +192,14 @@ def create_app(ctx: dict) -> web.Application:
         subscribed = await check_subscribed(int(user["id"]))
         return web.json_response({"subscribed": subscribed})
 
+    _fails: dict[int, list[float]] = {}
+
+    def _too_many(uid: int) -> bool:
+        t = time.time()
+        recent = [x for x in _fails.get(uid, []) if t - x < 900]
+        _fails[uid] = recent
+        return len(recent) >= 5
+
     async def register(request: web.Request):
         try:
             user = auth_user(request)
@@ -187,18 +207,30 @@ def create_app(ctx: dict) -> web.Application:
             return web.json_response({"error": str(e)}, status=401)
         uid = int(user["id"])
         body = await read_json(request)
-        is_switch = bool(body.get("switch"))
-        if not is_switch and not await check_subscribed(uid):
+        # Подписка проверяется всегда — в том числе при смене аккаунта (switch)
+        if not await check_subscribed(uid):
             return web.json_response({"error": "Сначала подпишись на канал"}, status=403)
         nick = (body.get("nickname") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_\[\]-]{3,24}", nick):
             return web.json_response({"error": "Неверный формат ника"}, status=400)
-        exists = await ctx["asyncio"].to_thread(ctx["account_exists"], nick, ctx["get_game_config"]())
-        if not exists:
-            return web.json_response(
-                {"error": f"Аккаунт «{nick}» не найден в базе сервера"},
-                status=404,
+        password = body.get("password") if isinstance(body.get("password"), str) else ""
+        if not 1 <= len(password) <= 128:
+            return web.json_response({"error": "Введи игровой пароль"}, status=400)
+        if _too_many(uid):
+            return web.json_response({"error": "Слишком много попыток. Подожди 15 минут"}, status=429)
+        try:
+            exists, ok = await ctx["asyncio"].to_thread(
+                ctx["check_game_login"], nick, password, ctx["get_game_config"]()
             )
+        except ctx["GrantError"] as e:
+            logging.error("register check: %s", e)
+            return web.json_response({"error": "Не удалось проверить аккаунт, попробуй позже"}, status=500)
+        if not exists:
+            return web.json_response({"error": f"Аккаунт «{nick}» не найден в базе сервера"}, status=404)
+        if not ok:
+            _fails.setdefault(uid, []).append(time.time())
+            return web.json_response({"error": "Неверный игровой пароль"}, status=403)
+        _fails.pop(uid, None)
         store.set_nickname(uid, nick, registered=True)
         player = await player_block(nick)
         return web.json_response({
@@ -279,12 +311,10 @@ def create_app(ctx: dict) -> web.Application:
         if method != "stars":
             return web.json_response({"error": "Доступна только оплата Telegram Stars"}, status=400)
 
-        stars_per_usd = int(ctx.get("stars_per_usd") or 50)
-        money_per_usd = int(ctx.get("money_per_usd") or 100000)
-        money_min_usd = float(ctx.get("money_min_usd") or 1)
+        money_per_star = int(ctx.get("money_per_star") or 2000)
 
         units_override = None
-        final_usd = None
+        final_stars = None
         item = None
 
         if product_id == "money_custom":
@@ -297,23 +327,23 @@ def create_app(ctx: dict) -> web.Application:
                 return web.json_response({"error": f"Минимум {min_units:,}".replace(",", " ")}, status=400)
             if units > 10**12:
                 return web.json_response({"error": "Слишком большая сумма"}, status=400)
-            # Цену считаем на сервере по курсу, округляя вверх до цента
-            usd = max(0.01, math.ceil(units * 100 / money_per_usd) / 100)
+            # Цену считаем на сервере по курсу (целые Stars, округление вверх)
+            stars_price = max(1, math.ceil(units / money_per_star))
             item = {
                 "id": "money_custom",
                 "title": f"{units:,} игровой валюты".replace(",", " "),
                 "kind": "money",
                 "units": units,
-                "price": usd,
+                "price": stars_price,
                 "category": "money",
             }
-            final_usd = usd
+            final_stars = stars_price
             units_override = units
         else:
             item = store.product(product_id)
             if not item:
                 return web.json_response({"error": "Товар не найден"}, status=404)
-            final_usd = float(item["price"])
+            final_stars = int(item["price"])
 
         if store.active(uid):
             return web.json_response({"error": "Есть незавершённый заказ"}, status=409)
@@ -324,7 +354,7 @@ def create_app(ctx: dict) -> web.Application:
             promo = store.get_promo(promo_code)
             if promo and (promo["max_uses"] == 0 or promo["used_count"] < promo["max_uses"]):
                 discount = int(promo["percent"])
-                final_usd = max(0.01, round(final_usd * (100 - discount) / 100, 2))
+                final_stars = max(1, math.ceil(final_stars * (100 - discount) / 100))
             else:
                 promo_code = None
 
@@ -334,7 +364,7 @@ def create_app(ctx: dict) -> web.Application:
                 payment_method=method,
                 promo_code=promo_code,
                 discount=discount,
-                final_price=final_usd,
+                final_price=final_stars,
                 units_override=units_override,
             )
             if promo_code:
@@ -342,7 +372,7 @@ def create_app(ctx: dict) -> web.Application:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=409)
 
-        stars = max(50, int(order.get("stars") or math.ceil(float(final_usd) * stars_per_usd)))
+        stars = int(order.get("stars") or final_stars)
         pay_url = None
         invoice_link = None
 
@@ -357,13 +387,13 @@ def create_app(ctx: dict) -> web.Application:
 
             bot = ctx.get("bot")
             if bot and not invoice_link:
-                stars_user = ctx.get("stars_user") or "mukhammad_im"
+                stars_user = ctx.get("stars_user") or ""
                 try:
                     await bot.send_message(
                         uid,
                         f"<b>Заказ #{order['id']}</b>\n"
                         f"{html.escape(str(item['title']))}\n"
-                        f"К оплате: <b>{stars} Stars</b> (${final_usd})\n\n"
+                        f"К оплате: <b>{stars} Stars</b>\n\n"
                         f"Отправь подарок (Gift) на <b>@{stars_user}</b> "
                         f"на сумму <b>{stars} Stars</b>.\n"
                         f"Скриншоты не нужны — после отправки подтверди в приложении.",
@@ -374,7 +404,6 @@ def create_app(ctx: dict) -> web.Application:
         return web.json_response({
             "order_id": order["id"],
             "price": stars,
-            "usd": final_usd,
             "stars": stars,
             "status": order["status"],
             "pay_url": pay_url,
@@ -528,11 +557,101 @@ def create_app(ctx: dict) -> web.Application:
     async def health(_request: web.Request):
         return web.json_response({"ok": True})
 
-    async def index(_request: web.Request):
-        return web.FileResponse(WEBAPP_DIR / "index.html")
+    async def index(request: web.Request):
+        if request.path == "/webapp":
+            raise web.HTTPFound("/webapp/")
+        page = (WEBAPP_DIR / "index.html").read_text(encoding="utf-8")
+        title = ctx.get("shop_title") or "WAIP SHOP"
+        if title != "WAIP SHOP":
+            page = page.replace("WAIP SHOP", html.escape(title))
+        theme = ctx.get("shop_theme") or ""
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", theme):
+            page = page.replace("</head>", f"<style>{_theme_css(theme)}</style></head>", 1)
+        return web.Response(text=page, content_type="text/html",
+                            headers={"Cache-Control": "no-cache"})
+
+    async def custom_logo(_request: web.Request):
+        path = ctx.get("shop_logo_path") or ""
+        if path and Path(path).is_file():
+            return web.FileResponse(Path(path))
+        return web.FileResponse(WEBAPP_DIR / "waip-shop-logo.webp")
+
+    # ── создание дочерних магазинов (только на мастере) ─────────────────────
+    tm = ctx.get("tenant_manager")
+
+    async def tenant_mine(request: web.Request):
+        try:
+            user = auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        if not tm:
+            return web.json_response({"enabled": False, "tenants": []})
+        return web.json_response({
+            "enabled": True,
+            "tenants": tm.list_for_owner(int(user["id"])),
+            "limit": MAX_TENANTS_PER_USER,
+        })
+
+    async def tenant_validate(request: web.Request):
+        try:
+            auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        if not tm:
+            return web.json_response({"error": "Создание ботов на этом сервере выключено"}, status=403)
+        body = await read_json(request)
+        try:
+            return web.json_response(await tm.validate(body))
+        except TenantError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def tenant_create(request: web.Request):
+        try:
+            user = auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        if not tm:
+            return web.json_response({"error": "Создание ботов на этом сервере выключено"}, status=403)
+        body = await read_json(request)
+        try:
+            job_id = tm.start_create(int(user["id"]), body, body.get("logo"))
+        except TenantError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"job_id": job_id})
+
+    async def tenant_job(request: web.Request):
+        try:
+            user = auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        job = tm.job_for(request.query.get("id", ""), int(user["id"])) if tm else None
+        if not job:
+            return web.json_response({"error": "Задача не найдена"}, status=404)
+        return web.json_response(job)
+
+    async def internal_sale(request: web.Request):
+        # Принимаем отчёты только с localhost и только с правильным секретом магазина
+        if request.remote not in ("127.0.0.1", "::1") or not tm:
+            return web.json_response({"error": "forbidden"}, status=403)
+        body = await read_json(request)
+        try:
+            tm.record_sale(int(body.get("tenant_id")), request.headers.get("X-Tenant-Secret", ""),
+                           str(body.get("external_order_id")), int(body.get("stars")))
+        except (TenantError, TypeError, ValueError):
+            return web.json_response({"error": "forbidden"}, status=403)
+        return web.json_response({"ok": True})
+
+    async def tenant_proxy(request: web.Request):
+        if not tm:
+            raise web.HTTPNotFound()
+        return await tm.proxy(request)
+
+    async def tenant_redirect(request: web.Request):
+        raise web.HTTPFound(f"/t/{request.match_info['tid']}/webapp/")
 
     app.router.add_get("/", index)
     app.router.add_get("/webapp", index)
+    app.router.add_get("/webapp/waip-shop-logo.webp", custom_logo)
     app.router.add_get("/webapp/", index)
     app.router.add_static("/webapp/", WEBAPP_DIR, show_index=False)
     app.router.add_get("/api/bootstrap", bootstrap)
@@ -547,6 +666,13 @@ def create_app(ctx: dict) -> web.Application:
     app.router.add_post("/api/daily", daily)
     app.router.add_post("/api/ref_claim", ref_claim)
     app.router.add_get("/health", health)
+    app.router.add_get("/api/tenant/mine", tenant_mine)
+    app.router.add_post("/api/tenant/validate", tenant_validate)
+    app.router.add_post("/api/tenant/create", tenant_create)
+    app.router.add_get("/api/tenant/job", tenant_job)
+    app.router.add_post("/internal/sale", internal_sale)
+    app.router.add_get("/t/{tid}/webapp", tenant_redirect)
+    app.router.add_route("*", "/t/{tid}/{tail:.*}", tenant_proxy)
     return app
 
 

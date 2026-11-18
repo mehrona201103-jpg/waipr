@@ -11,7 +11,8 @@ import json
 import logging
 import math
 import os
-import random
+import hmac
+import secrets as _secrets
 import re
 import sqlite3
 import string
@@ -23,6 +24,7 @@ from html import escape
 from pathlib import Path
 
 import config as C
+from tenants import TenantManager
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
@@ -47,37 +49,35 @@ except OSError:
 
 BOT_TOKEN = C.BOT_TOKEN.strip()
 OWNER_ID = int(C.OWNER_ID)
-PAYMENT_DETAILS = C.PAYMENT_DETAILS
-STARS_USER = getattr(C, "STARS_GIFT_USERNAME", "mukhammad_im").lstrip("@")
-CRYPTOBOT_TOKEN = (getattr(C, "CRYPTOBOT_TOKEN", "") or "").strip()
-WEBAPP_URL = (getattr(C, "WEBAPP_URL", "") or "").strip().rstrip("/")
-WEBAPP_HOST = getattr(C, "WEBAPP_HOST", "0.0.0.0")
-# Render / Heroku и т.п. передают порт в переменной PORT
-WEBAPP_PORT = int(os.environ.get("PORT") or getattr(C, "WEBAPP_PORT", 8080) or 8080)
-APK_DOWNLOAD_URL = (getattr(C, "APK_DOWNLOAD_URL", "") or "").strip()
-APK_BUTTON_TITLE = getattr(C, "APK_BUTTON_TITLE", "📥 Скачать игру (APK)")
-CHANNEL_USERNAME = (getattr(C, "CHANNEL_USERNAME", "") or "").lstrip("@")
-CHANNEL_ID = int(getattr(C, "CHANNEL_ID", 0) or 0)
-CHANNEL_URL = (getattr(C, "CHANNEL_URL", "") or "").strip()
-PREMIUM = bool(getattr(C, "PREMIUM_EMOJI", False))
-DB_PATH = os.environ.get("DB_PATH") or str(BASE / "orders.sqlite3")
+ROLE = C.ROLE  # master | child
+STARS_USER = (C.STARS_GIFT_USERNAME or "").lstrip("@")
+WEBAPP_URL = (C.WEBAPP_URL or "").strip().rstrip("/")
+WEBAPP_HOST = C.WEBAPP_HOST
+WEBAPP_PORT = C.WEBAPP_PORT
+APK_DOWNLOAD_URL = (C.APK_DOWNLOAD_URL or "").strip()
+APK_BUTTON_TITLE = C.APK_BUTTON_TITLE
+CHANNEL_USERNAME = (C.CHANNEL_USERNAME or "").lstrip("@")
+CHANNEL_ID = int(C.CHANNEL_ID or 0)
+CHANNEL_URL = (C.CHANNEL_URL or "").strip()
+PREMIUM = bool(C.PREMIUM_EMOJI)
+DB_PATH = C.DB_PATH
 try:
     Path(DB_PATH).resolve().parent.mkdir(parents=True, exist_ok=True)
 except OSError:
     pass
 BOT_USERNAME = ""  # заполняется в main()
 CATALOG = C.CATALOG
-
 ALLOWED_KINDS = ("level", "admin", "money", "skin", "password")
 
-STARS_PER_USD = int(getattr(C, "STARS_PER_USD", 50) or 50)
-MONEY_PER_USD = int(getattr(C, "MONEY_PER_USD", 100_000) or 100_000)
-MONEY_MIN_UNITS = int(getattr(C, "MONEY_MIN_UNITS", 100_000) or 100_000)
-MONEY_MIN_USD = MONEY_MIN_UNITS / MONEY_PER_USD
-REF_PERCENT = int(getattr(C, "REF_PERCENT", 5) or 5)
-DAILY_BONUS_MONEY = int(getattr(C, "DAILY_BONUS_MONEY", 1_000_000) or 1_000_000)
-DAILY_BONUS_HOURS = int(getattr(C, "DAILY_BONUS_HOURS", 24) or 24)
-PASSWORD_HASH = (getattr(C, "PASSWORD_HASH", "md5") or "md5").strip().lower()
+MONEY_PER_STAR = int(C.MONEY_PER_STAR)
+MONEY_MIN_UNITS = int(C.MONEY_MIN_UNITS)
+REF_PERCENT = int(C.REF_PERCENT)
+DAILY_BONUS_MONEY = int(C.DAILY_BONUS_MONEY)
+DAILY_BONUS_HOURS = int(C.DAILY_BONUS_HOURS)
+PASSWORD_HASH = (C.PASSWORD_HASH or "md5").strip().lower()
+TENANT_REPORT_URL = C.TENANT_REPORT_URL
+TENANT_SECRET = C.TENANT_SECRET
+TENANT_ID = C.TENANT_ID
 
 PRODUCTS: dict[str, dict] = {}
 for _cat, _sec in CATALOG.items():
@@ -85,7 +85,7 @@ for _cat, _sec in CATALOG.items():
         code = _item["id"]
         if code in PRODUCTS or _item["kind"] not in ALLOWED_KINDS:
             raise ValueError(f"Ошибка config.py: товар {code}")
-        if not (0 < float(_item["price"]) < 10**8 and 0 < int(_item["units"]) < 10**10):
+        if not (0 < int(_item["price"]) < 10**8 and 0 < int(_item["units"]) < 10**10):
             raise ValueError(f"Ошибка config.py: цена/units у {code}")
         PRODUCTS[code] = dict(_item, category=_cat)
 
@@ -100,6 +100,9 @@ def identifier(s: str) -> str:
     return f"`{s}`"
 
 
+_RNG = _secrets.SystemRandom()
+
+
 def gen_password(length: int = 8) -> str:
     """8 символов: буквы + цифры вперемешку."""
     if length < 4:
@@ -107,12 +110,12 @@ def gen_password(length: int = 8) -> str:
     letters = string.ascii_letters
     digits = string.digits
     chars = [
-        random.choice(letters), random.choice(letters),
-        random.choice(digits), random.choice(digits),
+        _RNG.choice(letters), _RNG.choice(letters),
+        _RNG.choice(digits), _RNG.choice(digits),
     ]
     pool = letters + digits
-    chars += [random.choice(pool) for _ in range(length - 4)]
-    random.shuffle(chars)
+    chars += [_RNG.choice(pool) for _ in range(length - 4)]
+    _RNG.shuffle(chars)
     return "".join(chars)
 
 
@@ -120,7 +123,7 @@ def hash_password(plain: str) -> str:
     """Хеширует пароль под формат игровой БД (см. PASSWORD_HASH в config).
 
     Поддерживается: plain, md5, sha1, sha256, double_md5, whirlpool.
-    Для WHIRLPOOL нужен hashlib с поддержкой (OpenSSL) — иначе fallback md5.
+    WHIRLPOOL требует поддержки OpenSSL; если её нет — сброс пароля остановится с ошибкой.
     """
     raw = (plain or "").encode("utf-8")
     method = PASSWORD_HASH
@@ -144,17 +147,14 @@ def hash_password(plain: str) -> str:
     return hashlib.md5(raw).hexdigest()
 
 
-def usd_to_stars(usd: float) -> int:
-    return max(50, int(math.ceil(float(usd) * STARS_PER_USD)))
+def stars_of(price) -> int:
+    """Цена товара в Telegram Stars (целое число, минимум 1)."""
+    return max(1, int(math.ceil(float(price))))
 
 
-def money_from_usd(usd: float) -> int:
-    return int(round(float(usd) * MONEY_PER_USD))
-
-
-def usd_for_units(units: int) -> float:
-    """Цена в USD за units валюты (округление вверх до цента)."""
-    return max(0.01, math.ceil(int(units) * 100 / MONEY_PER_USD) / 100)
+def stars_for_units(units: int) -> int:
+    """Сколько Stars стоит количество игровой валюты (округление вверх)."""
+    return max(1, math.ceil(int(units) / MONEY_PER_STAR))
 
 
 def money_item(units: int) -> dict:
@@ -163,7 +163,7 @@ def money_item(units: int) -> dict:
         "title": f"{units:,} игровой валюты".replace(",", " "),
         "kind": "money",
         "units": units,
-        "price": usd_for_units(units),
+        "price": stars_for_units(units),
         "category": "money",
     }
 
@@ -172,10 +172,6 @@ def fmt_left(seconds: int) -> str:
     seconds = max(0, int(seconds))
     h, m = seconds // 3600, (seconds % 3600) // 60
     return f"{h} ч {m} мин" if h else f"{max(1, m)} мин"
-
-
-def usd_from_money(units: int) -> float:
-    return round(float(units) / MONEY_PER_USD, 4)
 
 
 @dataclass(frozen=True)
@@ -371,6 +367,40 @@ def account_exists(nickname: str, cfg: GameConfig) -> bool:
         return False
 
 
+def check_game_login(nickname: str, password: str, cfg: GameConfig) -> tuple[bool, bool]:
+    """Ищет аккаунт и сверяет пароль с хешем из БД. Возвращает (аккаунт найден, пароль верный)."""
+    cfg.check()
+    try:
+        import mysql.connector
+    except ImportError as exc:
+        raise GrantError("Установи mysql-connector-python") from exc
+    table, nick = identifier(cfg.table), identifier(cfg.nickname_col)
+    pcol = identifier(cfg.password_col)
+    conn = None
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
+            database=cfg.database, connection_timeout=10, use_pure=True,
+        )
+        cur = conn.cursor(buffered=True)
+        cur.execute(f"SELECT {pcol} FROM {table} WHERE {nick}=%s LIMIT 2", (nickname,))
+        rows = cur.fetchall()
+    except Exception as exc:
+        raise GrantError(f"Ошибка MySQL: {exc}") from exc
+    finally:
+        if conn:
+            conn.close()
+    if not rows:
+        return False, False
+    if len(rows) > 1:
+        raise GrantError("Несколько аккаунтов с таким ником — вход остановлен")
+    stored = str(rows[0][0] or "")
+    if PASSWORD_HASH in ("plain", "none", ""):
+        return True, hmac.compare_digest(stored, password)
+    expected = hash_password(password)
+    return True, hmac.compare_digest(stored.lower(), expected.lower())
+
+
 def fetch_player(nickname: str, cfg: GameConfig) -> dict | None:
     cfg.check()
     try:
@@ -401,6 +431,27 @@ def fetch_player(nickname: str, cfg: GameConfig) -> dict | None:
     except Exception:
         logging.exception("fetch_player")
         return None
+
+
+def report_sale_async(order_id: int, stars: int) -> None:
+    """Дочерний магазин сообщает мастеру о продаже (для расчёта комиссии). Фоновый поток."""
+    if not (TENANT_REPORT_URL and TENANT_SECRET):
+        return
+    import threading
+
+    def _send():
+        try:
+            body = json.dumps({"tenant_id": TENANT_ID, "external_order_id": str(order_id),
+                               "stars": int(stars)}).encode()
+            req = urllib.request.Request(
+                TENANT_REPORT_URL, data=body, method="POST",
+                headers={"Content-Type": "application/json", "X-Tenant-Secret": TENANT_SECRET},
+            )
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception:
+            logging.exception("report_sale order=%s", order_id)
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def now() -> str:
@@ -534,20 +585,20 @@ class OrderStorage:
             self.db.execute("DELETE FROM category_photos WHERE category=?", (category,))
 
     def get_price(self, product_id: str) -> float:
-        """Цена товара в USD (Stars считаются отдельно: USD * STARS_PER_USD)."""
+        """Цена товара в Telegram Stars."""
         row = self.db.execute(
             "SELECT price FROM product_prices WHERE product_id=?", (product_id,)
         ).fetchone()
         if row:
-            return float(row["price"])
-        return float(PRODUCTS[product_id]["price"])
+            return int(row["price"])
+        return int(PRODUCTS[product_id]["price"])
 
-    def set_price(self, product_id: str, price: float) -> None:
+    def set_price(self, product_id: str, price: int) -> None:
         with self.db:
             self.db.execute(
                 "INSERT INTO product_prices(product_id,price) VALUES(?,?) "
                 "ON CONFLICT(product_id) DO UPDATE SET price=excluded.price",
-                (product_id, float(price)),
+                (product_id, int(price)),
             )
 
     def product(self, code: str) -> dict | None:
@@ -701,8 +752,8 @@ class OrderStorage:
         units_override: int | None = None,
         free: bool = False,
     ):
-        """final_price — цена в USD (целое или дробное округляется до 2 знаков → cents/100).
-        В БД price хранится как целое число Stars к оплате (USD * STARS_PER_USD).
+        """final_price — цена в Telegram Stars (целое число).
+        В БД price хранится как целое число Stars к оплате.
         """
         # Брошенный неоплаченный Stars-заказ не должен мешать новому
         # (если по его счёту потом придёт оплата — она всё равно будет выдана)
@@ -715,8 +766,8 @@ class OrderStorage:
         if self.active(telegram_id):
             raise ValueError("Есть незавершённый заказ")
         t = now()
-        usd = float(final_price if final_price is not None else item["price"])
-        stars = 0 if free else usd_to_stars(usd)
+        stars_price = int(final_price if final_price is not None else item["price"])
+        stars = 0 if free else max(1, stars_price)
         units = int(units_override if units_override is not None else item["units"])
         status = "processing" if free else (
             "awaiting_crypto" if payment_method == "crypto" else "awaiting_stars"
@@ -737,7 +788,6 @@ class OrderStorage:
         self.db.commit()
         order = self.get(cur.lastrowid)
         if order:
-            order["usd"] = usd
             order["stars"] = stars
         return order
 
@@ -874,6 +924,11 @@ class OrderStorage:
             (now(), order_id),
         )
         self.db.commit()
+        if (
+            prev and prev["status"] != "delivered" and int(prev["price"]) > 0
+            and prev.get("payment_method") != "free"
+        ):
+            report_sale_async(order_id, int(prev["price"]))
         # +REF_PERCENT% рефереру за каждое оплаченное пополнение реферала
         if (
             prev and prev["status"] != "delivered" and int(prev["price"]) > 0
@@ -929,8 +984,35 @@ class OrderStorage:
         }
 
 
+# Бесплатные бэкапы в Telegram: восстанавливаем базы ДО их открытия
+BACKUP_STATUS = "disabled"
+if ROLE == "master" and C.BACKUP_CHAT_ID and BOT_TOKEN:
+    from backup import restore as _restore_backup
+    BACKUP_STATUS = _restore_backup(BOT_TOKEN, C.BACKUP_CHAT_ID, C.DATA_DIR)
 store = OrderStorage(DB_PATH)
 store.recover_stuck()
+tenants = None  # TenantManager; создаётся только на мастере
+backup = None  # BackupManager; только на мастере с BACKUP_CHAT_ID
+
+
+def _backup_files():
+    """Список (ключ, абсолютный путь, путь относительно DATA_DIR) для резервных копий."""
+    master_tenants = os.path.join(C.TENANTS_DIR, "master.sqlite3")
+    out = [
+        ("master_orders", DB_PATH, os.path.relpath(DB_PATH, C.DATA_DIR)),
+        ("master_tenants", master_tenants, os.path.relpath(master_tenants, C.DATA_DIR)),
+    ]
+    tdir = Path(C.TENANTS_DIR)
+    if tdir.is_dir():
+        for d in sorted(tdir.iterdir()):
+            if not d.is_dir() or not d.name.isdigit():
+                continue
+            orders = d / "orders.sqlite3"
+            if orders.exists():
+                out.append((f"tenant_{d.name}_orders", str(orders), os.path.relpath(str(orders), C.DATA_DIR)))
+            for logo in sorted(d.glob("logo.*")):
+                out.append((f"tenant_{d.name}_{logo.name}", str(logo), os.path.relpath(str(logo), C.DATA_DIR)))
+    return out
 dp = Dispatcher()  # ВАЖНО: должен создаваться ДО всех @dp.* декораторов
 
 
@@ -1006,8 +1088,8 @@ def section_kb(category: str):
     rows = []
     for p in CATALOG.get(category, {}).get("products") or []:
         price = store.get_price(p["id"])
-        stars = usd_to_stars(price)
-        rows.append((button(f"🛒 {p['title']} — ${price} / {stars}★", f"buy:{p['id']}", "card", "primary"),))
+        stars = stars_of(price)
+        rows.append((button(f"🛒 {p['title']} — {stars}★", f"buy:{p['id']}", "card", "primary"),))
     if category == "money":
         rows.append((button(
             f"✏️ Своя сумма (от {MONEY_MIN_UNITS:,})".replace(",", " "), "money:custom", "money", "success"
@@ -1034,8 +1116,6 @@ def payment_kb(order_id: int):
 
 def pay_method_kb(code: str):
     rows = [(button("✨ Telegram Stars (подарок)", f"pay:stars:{code}", "stars"),)]
-    if CRYPTOBOT_TOKEN:
-        rows.append((button("🪙 CryptoBot (авто)", f"pay:crypto:{code}", "crypto"),))
     rows.append((button("⬅️ Назад", "home", "home"),))
     return keyboard(*rows)
 
@@ -1075,44 +1155,6 @@ def subscribe_kb():
     return keyboard(*rows)
 
 
-# ─── CryptoBot ───────────────────────────────────────────────────────────────
-def cryptobot_request(method: str, params: dict | None = None) -> dict:
-    if not CRYPTOBOT_TOKEN:
-        raise GrantError("CRYPTOBOT_TOKEN не задан")
-    url = f"https://pay.crypt.bot/api/{method}"
-    data = json.dumps(params or {}).encode()
-    req = urllib.request.Request(
-        url, data=data,
-        headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        body = json.loads(e.read().decode())
-        raise GrantError(body.get("error", {}).get("name", str(e))) from e
-    if not body.get("ok"):
-        raise GrantError(str(body.get("error", body)))
-    return body["result"]
-
-
-def create_crypto_invoice(order: dict) -> dict:
-    # price в заказе = Stars; переводим в USD для CryptoBot
-    stars = int(order["price"])
-    usd = max(0.01, round(stars / float(STARS_PER_USD), 2))
-    return cryptobot_request("createInvoice", {
-        "currency_type": "fiat",
-        "fiat": "USD",
-        "amount": str(usd),
-        "description": f"WAIP SHOP #{order['id']} — {order['item_title']}",
-        "payload": str(order["id"]),
-        "expires_in": 3600,
-        "allow_comments": False,
-        "allow_anonymous": False,
-    })
-
-
 async def create_stars_invoice_link_with_bot(bot: Bot, order: dict) -> str:
     """Ссылка на оплату Telegram Stars (XTR) — средства на баланс бота."""
     stars = max(1, int(order["price"]))
@@ -1130,7 +1172,7 @@ async def create_stars_invoice_link_with_bot(bot: Bot, order: dict) -> str:
 
 
 async def fulfill_paid_order(bot: Bot, order_id: int, source: str = "pay") -> None:
-    """Авто-выдача после успешной оплаты (Stars XTR / CryptoBot / gift auto)."""
+    """Авто-выдача после успешной оплаты (Stars XTR / gift auto)."""
     order = store.get(order_id)
     if not order:
         return
@@ -1192,6 +1234,13 @@ async def fulfill_paid_order(bot: Bot, order_id: int, source: str = "pay") -> No
 @dp.pre_checkout_query()
 async def on_pre_checkout(query: PreCheckoutQuery):
     payload = query.invoice_payload or ""
+    if payload.startswith("waip_fee_"):
+        ok = bool(tenants) and query.currency == "XTR" and tenants.fee_payable(payload)
+        if ok:
+            await query.answer(ok=True)
+        else:
+            await query.answer(ok=False, error_message="Счёт уже оплачен или недействителен.")
+        return
     order = None
     if payload.startswith("waip:"):
         try:
@@ -1213,6 +1262,11 @@ async def on_pre_checkout(query: PreCheckoutQuery):
 async def on_successful_payment(message: Message, bot: Bot):
     sp: SuccessfulPayment = message.successful_payment
     payload = sp.invoice_payload or ""
+    if payload.startswith("waip_fee_"):
+        if tenants:
+            await tenants.fee_paid(payload)
+        await message.answer("Комиссия оплачена. Спасибо! Магазин будет работать без паузы.")
+        return
     if not payload.startswith("waip:"):
         return
     try:
@@ -1240,22 +1294,14 @@ async def on_successful_payment(message: Message, bot: Bot):
     await fulfill_paid_order(bot, order_id, source="stars-xtr")
 
 
-def check_crypto_invoice(invoice_id: str) -> str:
-    result = cryptobot_request("getInvoices", {"invoice_ids": str(invoice_id)})
-    items = result if isinstance(result, list) else result.get("items", [])
-    if not items:
-        return "unknown"
-    return items[0].get("status", "unknown")
-
-
 # ─── Game config ─────────────────────────────────────────────────────────────
 def game_config() -> GameConfig:
     return GameConfig(
         host=store.setting("mysql_host", C.GAME_DB_HOST),
         port=int(store.setting("mysql_port", C.GAME_DB_PORT)),
-        user=store.setting("mysql_user", C.GAME_DB_USER),
-        password=store.setting("mysql_password", C.GAME_DB_PASSWORD),
-        database=store.setting("mysql_database", C.GAME_DB_NAME),
+        user=C.GAME_DB_USER,
+        password=C.GAME_DB_PASSWORD,
+        database=C.GAME_DB_NAME,
         table=store.setting("mysql_table", C.GAME_ACCOUNT_TABLE),
         nickname_col=store.setting("mysql_nickname_col", C.GAME_NICK_COLUMN),
         level_col=store.setting("mysql_level_col", C.GAME_LEVEL_COLUMN),
@@ -1639,7 +1685,7 @@ async def callback_money_custom(call: CallbackQuery):
     waiting_for_money.add(call.from_user.id)
     await call.message.answer(
         f"💰 Отправь количество валюты числом — от <b>{MONEY_MIN_UNITS:,}</b> и выше "
-        f"(без верхнего лимита).\nЦена посчитается по курсу: 1 USD = {MONEY_PER_USD:,}.\n"
+        f"(без верхнего лимита).\nКурс: {MONEY_PER_STAR:,} валюты = 1 Star.\n"
         f"/cancel — отмена.".replace(",", " ")
     )
 
@@ -1835,7 +1881,7 @@ async def callback_buy(call: CallbackQuery):
         waiting_for_nickname[call.from_user.id] = code
         await call.answer()
         await call.message.answer(
-            f"{em('check')} <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n\n"
+            f"{em('check')} <b>{escape(item['title'])}</b> — {stars_of(item['price'])}★\n\n"
             "Отправь игровой ник:"
         )
         return
@@ -1845,7 +1891,7 @@ async def callback_buy(call: CallbackQuery):
     waiting_pay[call.from_user.id] = {"code": code, "nick": nick, "promo": promo}
     await call.answer()
     await call.message.answer(
-        f"{em('check')} <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n"
+        f"{em('check')} <b>{escape(item['title'])}</b> — {stars_of(item['price'])}★\n"
         f"Ник: <code>{escape(nick)}</code>\n\n"
         "Выбери способ оплаты:",
         reply_markup=pay_method_kb(code),
@@ -1883,7 +1929,7 @@ async def callback_pay_method(call: CallbackQuery):
         promo = store.get_promo(promo_code)
         if promo and (promo["max_uses"] == 0 or promo["used_count"] < promo["max_uses"]):
             discount = int(promo["percent"])
-            final_price = max(0.01, round(float(item["price"]) * (100 - discount) / 100, 2))
+            final_price = max(1, math.ceil(float(item["price"]) * (100 - discount) / 100))
 
     try:
         order = store.create(
@@ -1901,30 +1947,6 @@ async def callback_pay_method(call: CallbackQuery):
         waiting_pay.pop(call.from_user.id, None)
 
     await call.answer()
-
-    if method == "crypto":
-        if not CRYPTOBOT_TOKEN:
-            store.cancel(order["id"], call.from_user.id)
-            await call.message.answer("CryptoBot не настроен.")
-            return
-        try:
-            inv = await asyncio.to_thread(create_crypto_invoice, order)
-            invoice_id = str(inv.get("invoice_id") or inv.get("invoiceId"))
-            pay_url = inv.get("bot_invoice_url") or inv.get("pay_url") or inv.get("payUrl")
-            store.set_crypto_invoice(order["id"], invoice_id)
-            await call.message.answer(
-                f"{em('crypto')} <b>Заказ #{order['id']}</b>\n"
-                f"{escape(item['title'])} — <b>${final_price}</b>\n\n"
-                f"Оплати: {pay_url}\n\n"
-                f"После оплаты товар выдастся автоматически (до 1 мин).",
-                reply_markup=payment_kb(order["id"]),
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-            )
-        except Exception as e:
-            logging.exception("crypto invoice")
-            store.cancel(order["id"], call.from_user.id)
-            await call.message.answer(f"Ошибка CryptoBot: {escape(str(e))}")
-        return
 
     extra = ""
     if item["kind"] == "password":
@@ -1947,7 +1969,7 @@ async def callback_pay_method(call: CallbackQuery):
         )
         await call.message.answer(
             f"{em('stars')} <b>Заказ #{order['id']}</b>\n"
-            f"{escape(item['title'])} — <b>${final_price}</b> = <b>{stars}★</b>{extra}\n\n"
+            f"{escape(item['title'])} — <b>{stars}★</b>{extra}\n\n"
             f"Нажми «Заплатить» в счёте выше — товар выдастся автоматически.\n\n"
             f"<i>Не получается? Отправь подарок на @{escape(STARS_USER)} "
             f"на ≈{stars}★ и пришли скриншот сюда — чек проверит админ.</i>",
@@ -2002,7 +2024,7 @@ async def callback_repeat(call: CallbackQuery):
     waiting_pay[call.from_user.id] = {"code": code, "nick": old["nickname"], "promo": None}
     await call.answer()
     await call.message.answer(
-        f"🔁 <b>{escape(item['title'])}</b> — ${item['price']} / {usd_to_stars(item['price'])}★\n"
+        f"🔁 <b>{escape(item['title'])}</b> — {stars_of(item['price'])}★\n"
         f"Ник: <code>{escape(old['nickname'])}</code>\n\nВыбери оплату:",
         reply_markup=pay_method_kb(code),
     )
@@ -2043,7 +2065,7 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
         return
 
     if action == "prices":
-        lines = [f"<b>Цены (USD)</b>\n1 USD = {STARS_PER_USD} Stars\n"]
+        lines = ["<b>Цены (Telegram Stars)</b>\n"]
         rows = []
         for cat, sec in CATALOG.items():
             if not sec.get("products"):
@@ -2051,9 +2073,9 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
             lines.append(f"\n<b>{sec['title']}</b>")
             for p in sec["products"]:
                 price = store.get_price(p["id"])
-                stars = usd_to_stars(price)
-                lines.append(f"• {p['title']} — <b>${price}</b> ({stars} Stars)")
-                rows.append((button(f"{p['id']} → ${price}", f"adm:setprice:{p['id']}", "money"),))
+                stars = stars_of(price)
+                lines.append(f"• {p['title']} — <b>{stars} Stars</b>")
+                rows.append((button(f"{p['id']} → {stars}★", f"adm:setprice:{p['id']}", "money"),))
         rows.append((button("Назад", "adm:home", "home"),))
         await call.message.answer("\n".join(lines), reply_markup=keyboard(*rows))
         return
@@ -2066,9 +2088,9 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
         admin_input[uid] = {"kind": "price", "product_id": pid}
         cur = store.get_price(pid)
         await call.message.answer(
-            f"Новая цена в <b>USD</b> для <b>{escape(PRODUCTS[pid]['title'])}</b>\n"
-            f"Сейчас: <b>${cur}</b> = {usd_to_stars(cur)} Stars\n"
-            f"Отправь число (например 5 или 2.5):"
+            f"Новая цена в <b>Stars</b> для <b>{escape(PRODUCTS[pid]['title'])}</b>\n"
+            f"Сейчас: <b>{stars_of(cur)} Stars</b>\n"
+            f"Отправь целое число Stars (например 50):"
         )
         return
 
@@ -2131,14 +2153,13 @@ async def admin_callbacks(call: CallbackQuery, bot: Bot):
             f"Таблица: <code>{escape(cfg.table)}</code>\n"
             f"Skin: <code>{escape(cfg.skin_col)}</code> | "
             f"Password: <code>{escape(cfg.password_col)}</code>\n\n"
-            "Отправь: <code>Логин Пароль Имя_базы</code>",
+            "Логин, пароль и база задаются в переменных Render (GAME_DB_*), не в чате.",
             reply_markup=keyboard(
                 (button("Сменить хост", "adm:host", "settings"),),
                 (button("Проверить", "adm:probe", "check"),),
                 (button("⬅️ Назад", "adm:home", "home"),),
             ),
         )
-        admin_input[uid] = {"kind": "db"}
         return
 
     if action == "host":
@@ -2332,13 +2353,13 @@ async def text_handler(message: Message, bot: Bot):
             return
         waiting_for_money.discard(uid)
         nick = store.get_nickname(uid)
-        usd = usd_for_units(units)
+        stars = stars_for_units(units)
         promo = (waiting_pay.get(uid) or {}).get("promo")
         waiting_pay[uid] = {"code": "money_custom", "nick": nick, "units": units, "promo": promo}
         await message.answer(
             f"{em('money')} <b>{units:,} игровой валюты</b>\n".replace(",", " ")
             + f"Ник: <code>{escape(nick or '—')}</code>\n"
-            f"Цена: <b>${usd}</b> = <b>{usd_to_stars(usd)}★</b>\n\nСпособ оплаты:",
+            f"Цена: <b>{stars}★</b>\n\nСпособ оплаты:",
             reply_markup=pay_method_kb("money_custom"),
         )
         return
@@ -2349,18 +2370,16 @@ async def text_handler(message: Message, bot: Bot):
         kind = stage.get("kind")
         if kind == "price" and uid == OWNER_ID:
             try:
-                price = float(text.replace(",", "."))
-                if not 0.01 <= price <= 10**7:
+                price = int(text.strip())
+                if not 1 <= price <= 10**7:
                     raise ValueError
             except ValueError:
-                await message.answer("Число USD от 0.01 (например 5 или 2.5)")
+                await message.answer("Целое число Stars от 1 (например 50)")
                 return
             store.set_price(stage["product_id"], price)
             admin_input.pop(uid, None)
-            stars = usd_to_stars(price)
             await message.answer(
-                f"{PRODUCTS[stage['product_id']]['title']} → <b>${price}</b> "
-                f"({stars} Stars)",
+                f"{PRODUCTS[stage['product_id']]['title']} → <b>{price} Stars</b>",
                 reply_markup=admin_panel_kb(True),
             )
             return
@@ -2400,23 +2419,6 @@ async def text_handler(message: Message, bot: Bot):
             ok = store.remove_moderator(mid)
             admin_input.pop(uid, None)
             await message.answer("Удалён" if ok else "Не найден")
-            return
-        if kind == "db" and uid == OWNER_ID:
-            parts = text.split()
-            if len(parts) != 3:
-                await message.answer("Логин Пароль Имя_базы")
-                return
-            store.set_settings({
-                "mysql_user": parts[0],
-                "mysql_password": parts[1],
-                "mysql_database": parts[2],
-            })
-            admin_input.pop(uid, None)
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            await message.answer(f"{em('check')} MySQL сохранён")
             return
         if kind == "host" and uid == OWNER_ID:
             m = re.fullmatch(r"([a-zA-Z0-9._-]{1,253})(?::(\d{1,5}))?", text)
@@ -2468,7 +2470,7 @@ async def text_handler(message: Message, bot: Bot):
         store.set_nickname(uid, nick)
         await message.answer(
             f"{em('check')} Ник: <code>{escape(nick)}</code>\n"
-            f"{escape(item['title'])} — ${item['price']} / {usd_to_stars(item['price'])}★\n\nСпособ оплаты:",
+            f"{escape(item['title'])} — {stars_of(item['price'])}★\n\nСпособ оплаты:",
             reply_markup=pay_method_kb(code),
         )
         return
@@ -2525,39 +2527,6 @@ async def receipt(message: Message, bot: Bot):
             logging.exception("notify %s", tid)
 
 
-# ─── Crypto poller ───────────────────────────────────────────────────────────
-async def crypto_poller(bot: Bot):
-    while True:
-        try:
-            rows = store.db.execute(
-                "SELECT id, cryptobot_invoice_id, telegram_id, item_title, nickname, kind "
-                "FROM orders WHERE status='awaiting_crypto' AND cryptobot_invoice_id IS NOT NULL"
-            ).fetchall()
-            for row in rows:
-                oid = row["id"]
-                try:
-                    status = await asyncio.to_thread(check_crypto_invoice, row["cryptobot_invoice_id"])
-                except Exception:
-                    logging.exception("check inv")
-                    continue
-                if status == "paid":
-                    if not store.mark_paid_crypto(oid):
-                        continue
-                    await fulfill_paid_order(bot, oid, source="crypto")
-                elif status == "expired":
-                    store.cancel(oid, row["telegram_id"])
-                    try:
-                        await bot.send_message(
-                            row["telegram_id"],
-                            f"{em('warning')} Счёт по заказу #{oid} истёк.",
-                        )
-                    except Exception:
-                        pass
-        except Exception:
-            logging.exception("crypto_poller")
-        await asyncio.sleep(20)
-
-
 async def keepalive():
     """Пинг самого себя, чтобы бесплатный хостинг (Render) не усыплял сервис."""
     url = (os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
@@ -2579,12 +2548,48 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     me = await bot.get_me()
-    global BOT_USERNAME
+    global BOT_USERNAME, tenants
     BOT_USERNAME = me.username or ""
+    if ROLE == "master":
+        fernet_key = os.environ.get("WAIP_MASTER_FERNET_KEY", "").strip()
+        public_base = re.sub(r"/webapp/?$", "", WEBAPP_URL)
+        if not fernet_key or not public_base:
+            logging.warning("Создание дочерних ботов выключено: нужны WAIP_MASTER_FERNET_KEY и WEBAPP_URL")
+        else:
+            try:
+                tdir = Path(C.TENANTS_DIR)
+                tenants = TenantManager(tdir, public_base, WEBAPP_PORT, fernet_key,
+                                        master_bot_id=int(BOT_TOKEN.split(":")[0]))
+                tenants.bot = bot
+                await tenants.open_session()
+                await tenants.start_all()
+                asyncio.create_task(tenants.commission_loop())
+            except Exception:
+                logging.exception("Не удалось запустить модуль дочерних ботов")
+                tenants = None
     logging.info("WAIP SHOP @%s", me.username)
+    global backup
+    if ROLE == "master":
+        if not C.BACKUP_CHAT_ID:
+            logging.warning("Бэкапы выключены (BACKUP_CHAT_ID не задан): данные будут стёрты при засыпании сервиса")
+        elif BACKUP_STATUS == "error":
+            logging.error("Бэкапы не запущены, чтобы не затереть копию пустыми данными. Исправь ошибку и перезапусти.")
+        else:
+            from backup import BackupManager
+            backup = BackupManager(bot, BOT_TOKEN, C.BACKUP_CHAT_ID, C.DATA_DIR, _backup_files)
+            try:
+                await backup.sync()
+            except Exception:
+                logging.exception("Первичная отправка бэкапа не удалась, повторим через интервал")
+            asyncio.create_task(backup.loop())
+            backup.install_sigterm_flush()
+            logging.info("Резервное копирование в Telegram включено")
+    if not C.DATA_PERSISTENT:
+        logging.warning(
+            "ДАННЫЕ НЕ СОХРАНЯЮТСЯ: папка %s не на постоянном диске. Заказы и созданные боты "
+            "будут стёрты при перезапуске/деплое. Для постоянного хранения нужен Persistent Disk (платно).",
+            C.DATA_DIR)
     asyncio.create_task(keepalive())
-    if CRYPTOBOT_TOKEN:
-        asyncio.create_task(crypto_poller(bot))
 
     # Web App HTTP API (нужен HTTPS-прокси / tunnel → WEBAPP_URL)
     try:
@@ -2603,19 +2608,21 @@ async def main():
             "fetch_player": fetch_player,
             "account_exists": account_exists,
             "is_subscribed": is_subscribed,
-            "create_crypto_invoice": create_crypto_invoice,
             "create_stars_invoice_link": _stars_link,
             "grant_to_game": grant_to_game,
             "notify_password": _notify_password,
-            "cryptobot_token": CRYPTOBOT_TOKEN,
             "stars_user": STARS_USER,
             "owner_id": OWNER_ID,
             "channel_username": CHANNEL_USERNAME,
             "channel_url": CHANNEL_URL,
             "apk_url": APK_DOWNLOAD_URL,
-            "stars_per_usd": STARS_PER_USD,
-            "money_per_usd": MONEY_PER_USD,
-            "money_min_usd": MONEY_MIN_USD,
+            "role": ROLE,
+            "money_per_star": MONEY_PER_STAR,
+            "shop_title": C.SHOP_TITLE,
+            "shop_theme": C.SHOP_THEME,
+            "shop_logo_path": C.SHOP_LOGO_PATH,
+            "tenant_manager": tenants,
+            "check_game_login": check_game_login,
             # True = после «Я отправил подарок» выдаём сразу (без ручного ok:)
             "auto_grant_stars_gift": False,
             "asyncio": asyncio,

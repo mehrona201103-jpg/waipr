@@ -351,3 +351,27 @@ html, body {
 .brand-sticker { width: 100%; height: 100%; object-fit: contain; display: block; filter: drop-shadow(0 0 18px rgba(168,85,247,.45)); }
 .logo-wrap { width: 190px; height: 190px; margin-bottom: 16px; }
 .logo-ring { inset: -7px; border-radius: 50%; }
+
+/* ── Свой бот: мастер-создание магазина ───────────────────────────────── */
+.tenant-wrap { padding: 16px 14px 40px; max-width: 520px; margin: 0 auto; position: relative; z-index: 1; }
+.terms { margin: 8px 0 14px; padding-left: 18px; color: var(--muted); line-height: 1.5; font-size: 14px; }
+.check-row { display: flex; align-items: center; gap: 10px; margin: 6px 0 14px; font-size: 14px; }
+.check-row input { width: 18px; height: 18px; accent-color: var(--purple); }
+.ring-card { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.ring-wrap { position: relative; width: 150px; height: 150px; }
+.ring { width: 150px; height: 150px; transform: rotate(-90deg); }
+.ring-bg, .ring-fg { fill: none; stroke-width: 9; }
+.ring-bg { stroke: rgba(168, 85, 247, 0.15); }
+.ring-fg {
+  stroke: var(--purple); stroke-linecap: round;
+  filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.6));
+  transition: stroke-dashoffset 0.8s var(--ease);
+}
+.ring-text { position: absolute; inset: 0; display: grid; place-items: center; font-size: 30px; }
+.logs {
+  background: rgba(7, 6, 12, 0.7); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin: 12px 0; height: 180px; overflow-y: auto;
+  font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--muted); white-space: pre-wrap;
+}
+#tCheck .profile-row span { font-size: 14px; }
+#tCheck .profile-row b { font-size: 13px; text-align: right; max-width: 60%; word-break: break-word; }

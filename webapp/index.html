@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>WAIP SHOP</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/webapp/style.css" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="bg-orb a"></div>
@@ -17,7 +17,7 @@
     <div class="logo-wrap">
       <div class="logo-ring"></div>
       <div class="logo">
-        <img src="/webapp/waip-shop-logo.webp" alt="WAIP SHOP" class="brand-sticker" width="720" height="720" decoding="async" fetchpriority="high" />
+        <img src="waip-shop-logo.webp" alt="WAIP SHOP" class="brand-sticker" width="720" height="720" decoding="async" fetchpriority="high" />
       </div>
     </div>
     <h1 class="title gradient-text">WAIP SHOP</h1>
@@ -33,6 +33,7 @@
     <div id="obNick" class="ob-nick hidden">
       <p class="subtitle">Введи игровой ник<br><small>точно как в игре</small></p>
       <input id="nickInput" class="input" placeholder="Ivan_Ivanov" maxlength="24" autocomplete="off" />
+      <input id="obPass" class="input" type="password" placeholder="Игровой пароль" maxlength="128" autocomplete="current-password" />
       <button id="btnReg" class="btn btn-primary">Подтвердить ник</button>
       <p id="nickErr" class="err"></p>
     </div>
@@ -81,15 +82,11 @@
         <div id="prodList" class="list stack"></div>
         <div id="moneyCustom" class="card custom-money hidden">
           <p class="card-label">Своя сумма валюты</p>
-          <p class="rate-line" id="moneyRate">1 USD = 100 000 валюты · 1 USD = 50 Stars</p>
+          <p class="rate-line" id="moneyRate">1 Star = 2 000 валюты</p>
           <div class="row-inputs">
             <div class="field">
               <label>Игровая валюта</label>
               <input id="moneyUnits" class="input" type="number" min="100000" step="1" placeholder="от 100000" />
-            </div>
-            <div class="field">
-              <label>USD</label>
-              <input id="moneyUsd" class="input" type="number" min="1" step="1" placeholder="1" />
             </div>
           </div>
           <div class="price-preview" id="moneyPreview">—</div>
@@ -121,7 +118,7 @@
           <p class="muted" id="sgNative">Откроется встроенная оплата Stars. Средства поступят на баланс бота автоматически.</p>
           <div id="sgGift" class="hidden">
             <ol>
-              <li>Открой профиль <b id="sgUser">@mukhammad_im</b></li>
+              <li>Открой профиль <b id="sgUser">@</b></li>
               <li>Отправь <b>подарок (Gift)</b> на сумму <b id="sgStars">0</b> Stars</li>
               <li>Нажми «Я отправил подарок»</li>
             </ol>
@@ -175,21 +172,108 @@
         <button id="btnLogout" class="btn btn-outline btn-block" type="button">Выйти из аккаунта</button>
         <div id="switchBox" class="switch-box hidden">
           <input id="switchNick" class="input" placeholder="Новый ник" maxlength="24" autocomplete="off" />
+          <input id="switchPass" class="input" type="password" placeholder="Игровой пароль" maxlength="128" autocomplete="current-password" />
           <button id="btnSwitchIn" class="btn btn-primary btn-block" type="button">Войти</button>
           <p id="switchErr" class="err"></p>
         </div>
       </div>
       <div class="card rates-card">
         <p class="card-label">Курсы</p>
-        <div class="profile-row"><span>Игровая валюта</span><b id="pfMoneyRate">100 000 валюты</b></div>
-        <div class="profile-row"><span>Курс Telegram Stars</span><b id="pfStarsRate">50 Stars</b></div>
-        <div class="profile-row"><span>Минимальная покупка</span><b>100 000 валюты / 50 Stars</b></div>
+        <div class="profile-row"><span>Курс</span><b id="pfMoneyRate">2 000 валюты = 1 Star</b></div>
+        <div class="profile-row"><span>Минимальная покупка</span><b>100 000 валюты = 50 Stars</b></div>
+      </div>
+      <div class="card rates-card hidden" id="tenantCard">
+        <p class="card-label">Свой магазин</p>
+        <p class="muted">Создай такой же бот со своей базой и оформлением. Комиссия 20% от выручки раз в неделю.</p>
+        <button id="btnTenant" class="btn btn-primary btn-block" type="button">Создать своего бота</button>
       </div>
     </section>
   </div>
 
+  <!-- СОЗДАНИЕ СВОЕГО БОТА (только на мастере) -->
+  <div id="tenantScreen" class="screen hidden">
+    <div class="tenant-wrap">
+      <button class="back-btn" id="tenantBack" type="button">← Назад</button>
+      <h2 class="section-title">Свой бот</h2>
+
+      <div id="tStepAgree" class="card">
+        <p class="card-label">Условия</p>
+        <ul class="terms">
+          <li>Комиссия <b>20%</b> от выручки твоего бота в Stars — раз в неделю.</li>
+          <li>Если за неделю выручки не было — комиссия не берётся.</li>
+          <li>Счёт на комиссию выставляет основной бот. Stars не переводятся автоматически.</li>
+          <li>Не оплатил в течение 3 дней — магазин приостанавливается до оплаты.</li>
+        </ul>
+        <label class="check-row"><input id="tAgreeBox" type="checkbox" /> Я согласен с условиями</label>
+        <button id="btnAgree" class="btn btn-primary btn-block" type="button">Я согласен</button>
+      </div>
+
+      <div id="tStepForm" class="hidden">
+        <div class="card">
+          <p class="card-label">Оформление</p>
+          <div class="field"><label>Название магазина (станет именем бота)</label>
+            <input id="tTitle" class="input" maxlength="40" placeholder="Мой сервер" autocomplete="off" /></div>
+          <div class="field"><label>Цвет приложения</label>
+            <input id="tColor" class="input" type="color" value="#a855f7" /></div>
+          <div class="field"><label>Логотип (необязательно, PNG/JPG/WEBP до 1.5 МБ)</label>
+            <input id="tLogo" class="input" type="file" accept="image/png,image/jpeg,image/webp" />
+            <small id="tLogoName" class="muted">не выбран — будет стандартный</small></div>
+        </div>
+        <div class="card">
+          <p class="card-label">Бот</p>
+          <div class="field"><label>Токен бота от @BotFather</label>
+            <input id="tToken" class="input" type="password" placeholder="123456:ABC…" autocomplete="off" /></div>
+          <div class="field"><label>Telegram ID главного администратора</label>
+            <input id="tAdmin" class="input" inputmode="numeric" placeholder="123456789" autocomplete="off" /></div>
+        </div>
+        <div class="card">
+          <p class="card-label">MySQL игрового сервера</p>
+          <div class="field"><label>HOST</label>
+            <input id="tDbHost" class="input" placeholder="1.2.3.4 или db.example.com" autocomplete="off" /></div>
+          <div class="field"><label>PORT</label>
+            <input id="tDbPort" class="input" inputmode="numeric" value="3306" autocomplete="off" /></div>
+          <div class="field"><label>LOGIN</label>
+            <input id="tDbUser" class="input" autocomplete="off" /></div>
+          <div class="field"><label>PASSWORD</label>
+            <input id="tDbPass" class="input" type="password" autocomplete="new-password" /></div>
+          <div class="field"><label>Имя базы</label>
+            <input id="tDbName" class="input" autocomplete="off" /></div>
+          <div class="field"><label>Хеш пароля в игре</label>
+            <select id="tHash" class="input">
+              <option value="md5">md5</option><option value="sha1">sha1</option>
+              <option value="sha256">sha256</option><option value="double_md5">double_md5</option>
+              <option value="whirlpool">whirlpool</option><option value="plain">plain</option>
+            </select></div>
+          <p class="muted">Пароль MySQL не показывается обратно и не хранится в браузере после отправки.</p>
+        </div>
+        <div id="tCheck" class="card hidden"></div>
+        <p id="tErr" class="err"></p>
+        <button id="btnTenantValidate" class="btn btn-outline btn-block" type="button">Проверить данные</button>
+        <button id="btnTenantCreate" class="btn btn-primary btn-block hidden" type="button">Создать бота</button>
+      </div>
+
+      <div id="tStepProgress" class="hidden">
+        <div class="card ring-card">
+          <div class="ring-wrap">
+            <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="ring-bg" cx="60" cy="60" r="52" />
+              <circle id="ringFg" class="ring-fg" cx="60" cy="60" r="52" />
+            </svg>
+            <div class="ring-text"><b id="ringPct">0%</b></div>
+          </div>
+          <p id="ringTitle" class="subtitle">Создаём магазин…</p>
+        </div>
+        <pre id="tLogs" class="logs"></pre>
+        <div id="tResult" class="card hidden"></div>
+        <button id="btnTenantRetry" class="btn btn-outline btn-block hidden" type="button">Назад к форме</button>
+      </div>
+
+      <div id="tMyList" class="list stack"></div>
+    </div>
+  </div>
+
   <div id="payCrypto" class="hidden" aria-hidden="true"></div>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-  <script src="/webapp/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

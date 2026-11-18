@@ -33,12 +33,10 @@
     customMoney: null,
     me: null,
     promo: null,
-    cryptoEnabled: false,
-    starsUser: "mukhammad_im",
-    starsPerUsd: 50,
-    moneyPerUsd: 100000,
-    moneyMinUsd: 1,
+    starsUser: "",
+    moneyPerStar: 2000,
     moneyMinUnits: 100000,
+    canTenant: false,
     ref: null,
     daily: null,
     channelUrl: null,
@@ -48,6 +46,10 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  // Путь API: /webapp/ или /t/<id>/webapp/ (дочерний магазин через мастер)
+  const BASE = (location.pathname.match(/^(.*?)\/webapp(\/|$)/) || ["", ""])[1];
+  const showEl = (el) => el && el.classList.remove("hidden");
+  const hideEl = (el) => el && el.classList.add("hidden");
   const show = (el) => el && el.classList.remove("hidden");
   const hide = (el) => el && el.classList.add("hidden");
 
@@ -72,13 +74,12 @@
     return Number(n).toLocaleString("ru-RU");
   }
 
-  function starsOf(usd) {
-    return Math.max(50, Math.ceil(Number(usd) * state.starsPerUsd));
+  function starsOf(v) {
+    return Math.max(1, Math.ceil(Number(v)));
   }
 
-  function priceLine(usd) {
-    const s = starsOf(usd);
-    return `${fmtNum(s)} Stars`;
+  function priceLine(v) {
+    return `${fmtNum(starsOf(v))} Stars`;
   }
 
   async function api(path, opts = {}) {
@@ -89,7 +90,7 @@
       { "Content-Type": "application/json", "X-Telegram-Init-Data": state.initData },
       opts.headers || {}
     );
-    const res = await fetch(path, { ...opts, headers });
+    const res = await fetch(BASE + path, { ...opts, headers });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || res.statusText || "Ошибка");
     return data;
@@ -142,22 +143,19 @@
   function applyBootstrap(data) {
     state.catalog = data.catalog || {};
     state.me = data.me;
-    state.cryptoEnabled = false;
-    state.starsUser = data.stars_user || "mukhammad_im";
-    state.starsPerUsd = data.stars_per_usd || 50;
-    state.moneyPerUsd = data.money_per_usd || 100000;
-    state.moneyMinUsd = data.money_min_usd || 1;
+    state.starsUser = data.stars_user || "";
+    state.moneyPerStar = data.money_per_star || 2000;
     state.moneyMinUnits = data.money_min_units || 100000;
+    state.canTenant = !!data.can_create_tenant;
+    state.canTenant ? showEl($("tenantCard")) : hideEl($("tenantCard"));
     state.ref = data.ref || null;
     state.daily = data.daily || null;
     state.channelUrl = data.channel_url;
     state.apkUrl = data.apk_url;
-    $("payStarsHint").textContent = `Авто · ${state.starsPerUsd} Stars = 1 USD`;
+    $("payStarsHint").textContent = "Авто · оплата Telegram Stars";
     $("sgUser").textContent = "@" + state.starsUser;
-    $("pfStarsRate").textContent = `${state.starsPerUsd} Stars`;
-    $("pfMoneyRate").textContent = `${fmtNum(state.moneyPerUsd)} валюты`;
-    $("moneyRate").textContent =
-      `1 USD = ${fmtNum(state.moneyPerUsd)} валюты · 1 USD = ${state.starsPerUsd} Stars`;
+    $("pfMoneyRate").textContent = `${fmtNum(state.moneyPerStar)} валюты = 1 Star`;
+    $("moneyRate").textContent = `1 Star = ${fmtNum(state.moneyPerStar)} валюты`;
   }
 
   function openApk() {
@@ -212,11 +210,12 @@
     try {
       const data = await api("/api/register", {
         method: "POST",
-        body: JSON.stringify({ nickname: nick }),
+        body: JSON.stringify({ nickname: nick, password: $("obPass").value }),
       });
       state.me = data.me || state.me;
       state.me.nickname = nick;
       state.me.registered = true;
+      $("obPass").value = "";
       hide($("obLoader"));
       $("obStatus").textContent = "Аккаунт подтверждён";
       toast("Добро пожаловать, " + nick);
@@ -334,7 +333,6 @@
           <small>${escapeHtml(p.kind)}</small>
         </div>
         <div class="item-price">
-          $${Number(p.price).toFixed(Number(p.price) % 1 ? 2 : 0)}
           <span>${fmtNum(starsOf(p.price))} Stars</span>
         </div>`;
       el.onclick = () => openPay({
@@ -352,20 +350,17 @@
   function moneyUnits() {
     return Math.floor(Number(String($("moneyUnits").value).replace(/\s/g, "")) || 0);
   }
-  function moneyUsd(units) {
-    return Math.max(0.01, Math.ceil((units * 100) / state.moneyPerUsd) / 100);
+  function moneyStars(units) {
+    return Math.max(1, Math.ceil(units / state.moneyPerStar));
   }
   function updateMoneyPreview() {
     const units = moneyUnits();
     const ok = units >= state.moneyMinUnits;
-    const usd = moneyUsd(units);
-    $("moneyUsd").value = units > 0 ? usd : "";
     $("moneyPreview").textContent = ok
-      ? `${fmtNum(units)} валюты = ${fmtNum(starsOf(usd))} Stars`
+      ? `${fmtNum(units)} валюты = ${fmtNum(moneyStars(units))} Stars`
       : `Минимум ${fmtNum(state.moneyMinUnits)} валюты`;
     $("btnMoneyPay").disabled = !ok;
   }
-  $("moneyUsd").readOnly = true;
   $("moneyUnits").min = state.moneyMinUnits;
   $("moneyUnits").addEventListener("input", updateMoneyPreview); // не трогаем ввод — можно печатать любое число
   $("btnMoneyPay").onclick = () => {
@@ -374,13 +369,12 @@
       toast("Минимум " + fmtNum(state.moneyMinUnits));
       return;
     }
-    const usd = moneyUsd(units);
     openPay({
       id: "money_custom",
       title: `${fmtNum(units)} игровой валюты`,
       kind: "money",
       units,
-      price: usd,
+      price: moneyStars(units),
       custom: true,
     });
   };
@@ -391,7 +385,6 @@
     state.customMoney = product.custom ? product : null;
     $("payItemTitle").textContent = product.title;
     $("payItemPrice").textContent = priceLine(product.price);
-    $("payCrypto").style.display = state.cryptoEnabled ? "flex" : "none";
     hide($("starsGuide"));
     hide($("payWait"));
     showView("pay");
@@ -423,16 +416,6 @@
       });
       state.pendingOrderId = data.order_id;
       try { tg?.HapticFeedback?.impactOccurred("medium"); } catch (_) {}
-
-      if (method === "crypto") {
-        if (data.pay_url) {
-          if (tg?.openLink) tg.openLink(data.pay_url);
-          else window.open(data.pay_url, "_blank");
-        }
-        showPayWait("Ожидаем оплату CryptoBot…");
-        startPoll();
-        return;
-      }
 
       // Stars
       if (data.invoice_link && tg?.openInvoice) {
@@ -701,13 +684,14 @@
     try {
       const data = await api("/api/register", {
         method: "POST",
-        body: JSON.stringify({ nickname: nick, switch: true }),
+        body: JSON.stringify({ nickname: nick, switch: true, password: $("switchPass").value }),
       });
       state.me = data.me || state.me;
       state.me.nickname = nick;
       state.me.registered = true;
       $("userChip").textContent = nick;
       $("switchNick").value = "";
+      $("switchPass").value = "";
       toast("Вошёл как " + nick);
       renderProfile();
       try { tg?.HapticFeedback?.notificationOccurred("success"); } catch (_) {}
@@ -717,6 +701,209 @@
       $("btnSwitchIn").disabled = false;
     }
   };
+
+  /* ── Свой бот: мастер-создание дочернего магазина ── */
+  const T = { agreed: false, validated: false, logo: null, jobTimer: null };
+  const RING_LEN = 2 * Math.PI * 52;
+
+  function tenantPayload() {
+    return {
+      title: $("tTitle").value.trim(),
+      theme: $("tColor").value,
+      token: $("tToken").value.trim(),
+      admin_id: $("tAdmin").value.trim(),
+      db_host: $("tDbHost").value.trim(),
+      db_port: $("tDbPort").value.trim() || "3306",
+      db_user: $("tDbUser").value.trim(),
+      db_password: $("tDbPass").value,
+      db_name: $("tDbName").value.trim(),
+      hash_method: $("tHash").value,
+    };
+  }
+
+  function tenantSteps(step) {
+    hideEl($("tStepAgree")); hideEl($("tStepForm")); hideEl($("tStepProgress"));
+    hideEl($("tMyList"));
+    if (step === "agree") showEl($("tStepAgree"));
+    if (step === "form") { showEl($("tStepForm")); showEl($("tMyList")); }
+    if (step === "progress") showEl($("tStepProgress"));
+  }
+
+  function setRing(p) {
+    $("ringFg").style.strokeDasharray = RING_LEN;
+    $("ringFg").style.strokeDashoffset = RING_LEN * (1 - Math.min(100, Math.max(0, p)) / 100);
+    $("ringPct").textContent = Math.round(p) + "%";
+  }
+
+  function renderMyTenants(list) {
+    const box = $("tMyList");
+    box.innerHTML = "";
+    if (!list.length) return;
+    const title = document.createElement("p");
+    title.className = "card-label";
+    title.textContent = "Мои боты";
+    box.appendChild(title);
+    list.forEach((t) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const statusText = { active: "работает", suspended: "приостановлен (не оплачена комиссия)", stopped: "остановлен" }[t.status] || t.status;
+      card.innerHTML = `<b></b><p class="muted"></p>`;
+      card.querySelector("b").textContent = `${t.title} · @${t.bot_username}`;
+      card.querySelector("p").textContent = statusText;
+      box.appendChild(card);
+    });
+  }
+
+  async function openTenant() {
+    hideEl($("shop"));
+    showEl($("tenantScreen"));
+    window.scrollTo(0, 0);
+    if (!T.agreed) { tenantSteps("agree"); return; }
+    tenantSteps("form");
+    try {
+      const data = await api("/api/tenant/mine");
+      renderMyTenants(data.tenants || []);
+    } catch (_) { /* список не критичен */ }
+  }
+
+  function closeTenant() {
+    clearInterval(T.jobTimer);
+    $("tDbPass").value = "";
+    showEl($("shop"));
+    hideEl($("tenantScreen"));
+  }
+
+  $("btnTenant").onclick = openTenant;
+  $("tenantBack").onclick = closeTenant;
+
+  $("btnAgree").onclick = () => {
+    if (!$("tAgreeBox").checked) {
+      toast("Отметь галочку «Я согласен»");
+      return;
+    }
+    T.agreed = true;
+    tenantSteps("form");
+    api("/api/tenant/mine").then((d) => renderMyTenants(d.tenants || [])).catch(() => {});
+  };
+
+  tenantFieldIds().forEach((id) => {
+    $(id).addEventListener("input", () => {
+      T.validated = false;
+      hideEl($("btnTenantCreate"));
+    });
+  });
+  function tenantFieldIds() {
+    return ["tTitle", "tColor", "tToken", "tAdmin", "tDbHost", "tDbPort", "tDbUser", "tDbPass", "tDbName", "tHash"];
+  }
+
+  $("tLogo").addEventListener("change", () => {
+    const file = $("tLogo").files[0];
+    T.logo = null;
+    $("tLogoName").textContent = "не выбран — будет стандартный";
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { toast("Нужен PNG, JPG или WEBP"); $("tLogo").value = ""; return; }
+    if (file.size > 1500000) { toast("Логотип больше 1.5 МБ"); $("tLogo").value = ""; return; }
+    const reader = new FileReader();
+    reader.onload = () => { T.logo = reader.result; $("tLogoName").textContent = file.name; };
+    reader.readAsDataURL(file);
+  });
+
+  function renderChecks(checks) {
+    const box = $("tCheck");
+    box.innerHTML = "";
+    checks.forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "profile-row";
+      const left = document.createElement("span");
+      left.textContent = (c.ok ? "✅ " : "❌ ") + c.name;
+      const right = document.createElement("b");
+      right.textContent = c.msg;
+      row.appendChild(left);
+      row.appendChild(right);
+      box.appendChild(row);
+    });
+    showEl(box);
+  }
+
+  $("btnTenantValidate").onclick = async () => {
+    $("tErr").textContent = "";
+    $("btnTenantValidate").disabled = true;
+    try {
+      const data = await api("/api/tenant/validate", { method: "POST", body: JSON.stringify(tenantPayload()) });
+      renderChecks(data.checks || []);
+      T.validated = !!data.ok;
+      data.ok ? showEl($("btnTenantCreate")) : hideEl($("btnTenantCreate"));
+      if (!data.ok) $("tErr").textContent = "Исправь ошибки выше и проверь ещё раз.";
+    } catch (e) {
+      $("tErr").textContent = e.message || "Ошибка проверки";
+    } finally {
+      $("btnTenantValidate").disabled = false;
+    }
+  };
+
+  $("btnTenantCreate").onclick = async () => {
+    if (!T.validated) return;
+    const body = { ...tenantPayload(), agree: true, logo: T.logo };
+    $("tDbPass").value = "";  // пароль не остаётся в браузере
+    hideEl($("btnTenantCreate")); hideEl($("btnTenantValidate")); hideEl($("tCheck"));
+    tenantSteps("progress");
+    $("tResult").innerHTML = ""; hideEl($("tResult")); hideEl($("btnTenantRetry"));
+    $("tLogs").textContent = "";
+    setRing(0);
+    $("ringTitle").textContent = "Создаём магазин…";
+    try {
+      const data = await api("/api/tenant/create", { method: "POST", body: JSON.stringify(body) });
+      pollTenantJob(data.job_id);
+    } catch (e) {
+      failTenantJob(e.message || "Не удалось начать создание");
+    }
+  };
+
+  function failTenantJob(message) {
+    clearInterval(T.jobTimer);
+    $("ringTitle").textContent = "Не получилось";
+    $("tLogs").textContent += `\nОшибка: ${message}`;
+    showEl($("btnTenantRetry"));
+    $("btnTenantRetry").onclick = () => {
+      tenantSteps("form");
+      showEl($("btnTenantValidate"));
+    };
+  }
+
+  function pollTenantJob(jobId) {
+    clearInterval(T.jobTimer);
+    T.jobTimer = setInterval(async () => {
+      try {
+        const job = await api("/api/tenant/job?id=" + encodeURIComponent(jobId));
+        setRing(job.percent || 0);
+        $("tLogs").textContent = (job.logs || []).join("\n");
+        $("tLogs").scrollTop = $("tLogs").scrollHeight;
+        if (job.status === "done") {
+          clearInterval(T.jobTimer);
+          $("ringTitle").textContent = "Магазин создан";
+          const r = job.result || {};
+          $("tResult").innerHTML = "";
+          const p = document.createElement("p");
+          p.textContent = `Бот @${r.bot_username || ""} работает. Открой его и нажми меню → WAIP SHOP.`;
+          const btn = document.createElement("button");
+          btn.className = "btn btn-primary btn-block";
+          btn.type = "button";
+          btn.textContent = "Открыть бота";
+          btn.onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(r.bot_url) : window.open(r.bot_url, "_blank"));
+          $("tResult").appendChild(p);
+          $("tResult").appendChild(btn);
+          showEl($("tResult"));
+          T.validated = false;
+          renderMyTenants([]);
+          api("/api/tenant/mine").then((d) => renderMyTenants(d.tenants || [])).catch(() => {});
+        } else if (job.status === "failed") {
+          failTenantJob(job.error || "Ошибка");
+        }
+      } catch (e) {
+        // временная ошибка сети — продолжаем опрос
+      }
+    }, 900);
+  }
 
   /* ── Start ── */
   runOnboarding();
