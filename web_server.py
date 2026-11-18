@@ -556,6 +556,7 @@ def create_app(ctx: dict) -> web.Application:
         title = ctx.get("shop_title") or "WAIP SHOP"
         if title != "WAIP SHOP":
             page = page.replace("WAIP SHOP", html.escape(title))
+        page = page.replace("<head>", "<head>\n  <script>window.SHOP_TITLE=" + json.dumps(title).replace("<", "\\u003c") + ";</script>", 1)
         theme = ctx.get("shop_theme") or ""
         if re.fullmatch(r"#[0-9a-fA-F]{6}", theme):
             page = page.replace("</head>", f"<style>{_theme_css(theme)}</style></head>", 1)
@@ -641,6 +642,8 @@ def create_app(ctx: dict) -> web.Application:
     async def tenant_redirect(request: web.Request):
         raise web.HTTPFound(f"/t/{request.match_info['tid']}/webapp/")
 
+    if ctx.get("studio"):
+        ctx["studio"].add_routes(app)
     app.router.add_get("/", index)
     app.router.add_get("/webapp", index)
     app.router.add_get("/webapp/waip-shop-logo.webp", custom_logo)

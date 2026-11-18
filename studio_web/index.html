@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAIP STUDIO — автодонат-боты для CRMP</title>
+<style>
+:root{--bg:#07060c;--card:#12101c;--line:#2a2540;--p:#8b5cf6;--p2:#6d28d9;--t:#f1eefc;--m:#9a94b8;--ok:#34d399;--bad:#f87171;--warn:#fbbf24}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(900px 500px at 80% -10%,#2a1a55 0,transparent 60%),var(--bg);color:var(--t);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh}
+.wrap{max-width:980px;margin:0 auto;padding:16px}
+h1,h2,h3{margin:0 0 10px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.brand{font-weight:800;font-size:20px;background:linear-gradient(90deg,#c4b5fd,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.tab,.btn{border:1px solid var(--line);background:#1a1730;color:var(--t);padding:10px 16px;border-radius:12px;cursor:pointer;font:inherit}
+.tab.on,.btn.pri{background:linear-gradient(135deg,var(--p),var(--p2));border-color:transparent;font-weight:600}
+.btn.sm{padding:6px 10px;font-size:13px}.btn.bad{color:var(--bad)}
+.btn:disabled{opacity:.5;cursor:wait}
+label{display:block;color:var(--m);font-size:13px;margin:12px 0 4px}
+input,select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:#0d0b16;color:var(--t);font:inherit}
+input[type=color]{padding:2px;height:44px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+@media(max-width:640px){.grid{grid-template-columns:1fr}}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.stat b{display:block;font-size:22px}.stat span{color:var(--m);font-size:13px}
+.row{border-top:1px solid var(--line);padding:12px 0;display:flex;gap:10px;justify-content:space-between;flex-wrap:wrap;align-items:center}
+.row:first-child{border-top:0}
+.tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.s-awaiting_payment{color:var(--warn)}.s-done{color:var(--ok)}.s-failed,.s-cancelled{color:var(--bad)}.s-creating,.s-paid{color:#60a5fa}
+.m{color:var(--m);font-size:13px}.err{color:var(--bad);margin-top:8px}.okc{color:var(--ok)}
+.check{padding:6px 0}.hint{background:#1a1730;border:1px dashed var(--line);border-radius:10px;padding:10px;margin:10px 0;font-size:13px;color:var(--m);word-break:break-all}
+.hide{display:none}
+code{background:#0d0b16;padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+(() => {
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ST = {awaiting_payment:"Ждёт оплаты",paid:"Оплачен",creating:"Создаётся",done:"Готов",failed:"Ошибка",cancelled:"Отменён"};
+let me = null, tab = "orders", logo = "";
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-Requested-With": "studio"}, body: JSON.stringify(body)};
+  const r = await fetch("/studio/api/" + path, opt);
+  let d = {}; try { d = await r.json(); } catch (_) {}
+  if (r.status === 401) { me = null; render(); throw new Error("Нужен вход"); }
+  if (!r.ok) throw new Error(d.error || "Ошибка " + r.status);
+  return d;
+}
+const copy = t => navigator.clipboard.writeText(t).then(() => alert("Скопировано"), () => prompt("Скопируй:", t));
+
+async function boot() { try { me = await api("me"); } catch (_) { me = null; } render(); }
+
+function render() {
+  const app = $("#app");
+  if (!me) {
+    app.innerHTML = `<div class="card" style="max-width:380px;margin:12vh auto"><div class="brand" style="font-size:26px">WAIP STUDIO</div>
+      <p class="m">Вход для администратора и модераторов</p>
+      <label>Логин (Telegram username)</label><input id="lg" autocomplete="username">
+      <label>Пароль</label><input id="pw" type="password" autocomplete="current-password">
+      <div class="err" id="le"></div><br><button class="btn pri" id="lb" style="width:100%">Войти</button></div>`;
+    const go = async () => { try { await api("login", {login: $("#lg").value, password: $("#pw").value}); await boot(); } catch (e) { $("#le").textContent = e.message; } };
+    $("#lb").onclick = go; $("#pw").onkeydown = e => e.key === "Enter" && go();
+    return;
+  }
+  const admin = me.role === "admin";
+  app.innerHTML = `<div class="top"><div><span class="brand">WAIP STUDIO</span> <span class="m">· ${esc(me.login)} (${admin ? "админ" : "модератор"})</span></div>
+    <button class="btn sm" id="out">Выйти</button></div>
+    <div class="stats">
+      <div class="stat"><b>${me.price} ⭐</b><span>цена автодонат-бота</span></div>
+      ${admin ? `<div class="stat"><b>100%</b><span>твоя доля с заказов админа</span></div>` : `<div class="stat"><b>${me.my_share} ⭐</b><span>твоя доля с заказа (${me.mod_percent}%)</span></div>
+      <div class="stat"><b>${me.owed} ⭐</b><span>к выплате тебе</span></div><div class="stat"><b>${me.earned} ⭐</b><span>заработано всего</span></div>`}
+    </div>
+    ${!admin && !me.tg_linked ? `<div class="card">⚠️ Чтобы получать мгновенные уведомления об оплатах, нажми <b>Start</b> в боте <a style="color:#c4b5fd" href="https://t.me/${esc(me.bot_username)}" target="_blank">@${esc(me.bot_username)}</a> с аккаунта @${esc(me.login)}.</div>` : ""}
+    <div class="tabs"><button class="tab" data-t="orders">Заказы</button><button class="tab" data-t="new">+ Новый бот</button>${admin ? `<button class="tab" data-t="mods">Модераторы</button>` : ""}</div>
+    <div id="view"></div>`;
+  $("#out").onclick = async () => { await api("logout", {}); me = null; render(); };
+  document.querySelectorAll(".tab").forEach(b => { b.classList.toggle("on", b.dataset.t === tab); b.onclick = () => { tab = b.dataset.t; render(); }; });
+  ({orders: viewOrders, new: viewNew, mods: viewMods})[tab]();
+}
+
+async function viewOrders() {
+  const v = $("#view"); v.innerHTML = `<div class="card m">Загрузка…</div>`;
+  const {orders} = await api("orders");
+  if (!orders.length) { v.innerHTML = `<div class="card m">Заказов пока нет. Нажми «+ Новый бот».</div>`; return; }
+  v.innerHTML = `<div class="card">` + orders.map(o => `<div class="row"><div>
+      <b>#${o.id} ${esc(o.title)}</b> <span class="tag s-${o.status}">${ST[o.status] || o.status}</span><br>
+      <span class="m">клиент ID ${o.customer_id} · ${o.price} ⭐ · модератору ${o.mod_share} / боту ${o.bot_share} · создал ${esc(o.creator)} · ${o.created_at.replace("T", " ")}</span>
+      ${o.error ? `<div class="err">${esc(o.error)}</div>` : ""}
+      ${o.bot_url ? `<br><a style="color:#c4b5fd" href="${esc(o.bot_url)}" target="_blank">${esc(o.bot_url)}</a>` : ""}</div>
+      <div>${o.pay_link ? `<button class="btn sm" data-a="link" data-id="${o.id}" data-l="${esc(o.pay_link)}">Ссылка оплаты</button> <button class="btn sm" data-a="resend" data-id="${o.id}">Отправить счёт ещё раз</button> <button class="btn sm bad" data-a="cancel" data-id="${o.id}">Отмена</button>` : ""}
+      ${o.status === "failed" && me.role === "admin" ? `<button class="btn sm" data-a="retry" data-id="${o.id}">Повторить создание</button>` : ""}</div></div>`).join("") + `</div>`;
+  v.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => {
+    const a = b.dataset.a, id = b.dataset.id;
+    try {
+      if (a === "link") return copy(b.dataset.l);
+      if (a === "resend") { const r = await api(`orders/${id}/resend`, {}); alert(r.ok ? "Счёт отправлен клиенту в Telegram" : "Клиент ещё не писал боту. Отправь ему ссылку оплаты."); }
+      if (a === "cancel" && confirm("Отменить заказ?")) await api(`orders/${id}/cancel`, {});
+      if (a === "retry") await api(`orders/${id}/retry`, {});
+      viewOrders();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+const F = [["title","1. Имя бота","text",""],["db_host","3. MySQL хост","text","например 185.12.34.56"],["db_user","4. MySQL логин","text",""],["db_password","5. MySQL пароль","text",""],["db_name","6. MySQL имя базы","text",""],["token","8. Токен бота (от @BotFather)","text","123456:ABC…"],["admin_id","9. ID админа клиента (@userinfobot)","text","число"]];
+function viewNew() {
+  logo = "";
+  $("#view").innerHTML = `<div class="card"><h3>Данные клиента</h3>
+    <div class="m">Цена ${me.price} ⭐. После создания клиенту придёт счёт с кнопкой «Оплатить».${me.role === "moderator" ? ` Тебе ${me.my_share} ⭐ (${me.mod_percent}%).` : ""}</div>
+    <div class="grid">${F.slice(0, 1).map(f => `<div><label>${f[1]}</label><input id="f_${f[0]}" placeholder="${f[3]}"></div>`).join("")}
+      <div><label>2. Цвет бота</label><input id="f_theme" type="color" value="#8b5cf6"></div>
+      ${F.slice(1, 5).map(f => `<div><label>${f[1]}</label><input id="f_${f[0]}" placeholder="${f[3]}" autocomplete="off"></div>`).join("")}
+      <div><label>MySQL порт</label><input id="f_db_port" value="3306"></div>
+      <div><label>Хеш пароля в БД</label><select id="f_hash_method">${["md5","sha1","sha256","double_md5","whirlpool","plain"].map(x => `<option>${x}</option>`).join("")}</select></div>
+      <div><label>7. Логотип (по желанию)</label><input id="f_logo" type="file" accept="image/png,image/jpeg,image/webp"></div>
+      ${F.slice(5).map(f => `<div><label>${f[1]}</label><input id="f_${f[0]}" placeholder="${f[3]}" autocomplete="off"></div>`).join("")}
+    </div><div id="chk"></div><div class="err" id="ne"></div><br>
+    <button class="btn" id="bv">Проверить данные</button> <button class="btn pri hide" id="bc">Создать заказ (${me.price} ⭐)</button></div><div id="res"></div>`;
+  $("#f_logo").onchange = e => { const f = e.target.files[0]; if (!f) { logo = ""; return; } const r = new FileReader(); r.onload = () => logo = r.result; r.readAsDataURL(f); };
+  const data = () => { const o = {logo}; [...F.map(f => f[0]), "theme", "db_port", "hash_method"].forEach(k => o[k] = $("#f_" + k).value.trim()); return o; };
+  $("#bv").onclick = async () => {
+    $("#ne").textContent = ""; $("#bv").disabled = true; $("#chk").innerHTML = `<div class="m">Проверяем токен и MySQL…</div>`;
+    try { const r = await api("validate", data());
+      $("#chk").innerHTML = r.checks.map(c => `<div class="check ${c.ok ? "okc" : "err"}">${c.ok ? "✅" : "❌"} <b>${esc(c.name)}</b>: ${esc(c.msg)}</div>`).join("");
+      $("#bc").classList.toggle("hide", !r.ok);
+    } catch (e) { $("#chk").innerHTML = ""; $("#ne").textContent = e.message; }
+    $("#bv").disabled = false;
+  };
+  $("#bc").onclick = async () => {
+    $("#bc").disabled = true; $("#ne").textContent = "";
+    try { const r = (await api("orders", data())).order;
+      $("#res").innerHTML = `<div class="card"><h3>Заказ #${r.id} создан</h3>${r.invoice_sent ? `<p class="okc">✅ Клиенту в Telegram отправлен счёт на ${r.price} ⭐ с кнопкой «Оплатить».</p>` : `<p>Клиент ещё не писал боту студии, поэтому счёт не доставлен. Отправь ему ссылку — по ней он получит счёт:</p>`}
+        <div class="hint">${esc(r.pay_link)}</div><button class="btn" id="cp">Скопировать ссылку оплаты</button>
+        <p class="m">После оплаты бот клиента создаётся автоматически, клиент получит ссылку на него.</p></div>`;
+      $("#cp").onclick = () => copy(r.pay_link); $("#bc").classList.add("hide");
+      $("#res").scrollIntoView({behavior: "smooth"});
+    } catch (e) { $("#ne").textContent = e.message; }
+    $("#bc").disabled = false;
+  };
+}
+
+async function viewMods() {
+  const v = $("#view"); const d = await api("moderators");
+  v.innerHTML = `<div class="stats"><div class="stat"><b>${d.total_bot} ⭐</b><span>остаётся боту студии (всего)</span></div><div class="stat"><b>${d.total_owed} ⭐</b><span>долг перед модераторами</span></div></div>
+    <div class="card"><h3>Добавить модератора</h3><div class="m">Логин — его Telegram username (туда уходят 60% и уведомления). Пароль покажется один раз.</div>
+    <label>Telegram username</label><input id="ml" placeholder="username"><div class="err" id="me2"></div><br><button class="btn pri" id="ma">Добавить</button><div id="mr"></div></div>
+    <div class="card"><h3>Модераторы</h3>${d.moderators.length ? d.moderators.map(m => `<div class="row"><div><b>@${esc(m.login)}</b> ${m.active ? "" : '<span class="tag s-failed">отключён</span>'}<br>
+      <span class="m">оплаченных заказов: ${m.paid_orders} · заработано ${m.earned} ⭐ · <b>к выплате ${m.owed} ⭐</b> · Telegram ${m.tg_linked ? "подключён" : "не подключён"}</span></div>
+      <div><button class="btn sm" data-a="paid" data-id="${m.id}">Отметить выплачено</button> <button class="btn sm" data-a="pw" data-id="${m.id}">Новый пароль</button> <button class="btn sm bad" data-a="tg" data-id="${m.id}">${m.active ? "Отключить" : "Включить"}</button></div></div>`).join("") : '<div class="m">Модераторов нет</div>'}</div>`;
+  $("#ma").onclick = async () => { try { const r = await api("moderators", {login: $("#ml").value}); $("#mr").innerHTML = `<div class="hint">Логин: <b>${esc(r.login)}</b><br>Пароль: <b>${esc(r.password)}</b><br>Сохрани — больше не покажется.</div>`; setTimeout(() => {}, 0); } catch (e) { $("#me2").textContent = e.message; } };
+  v.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => {
+    try { const id = b.dataset.id, a = b.dataset.a;
+      if (a === "paid" && confirm("Ты перевёл модератору его Stars?")) await api(`moderators/${id}/paid`, {});
+      if (a === "pw") { const r = await api(`moderators/${id}/password`, {}); prompt("Новый пароль (скопируй):", r.password); }
+      if (a === "tg") await api(`moderators/${id}/toggle`, {});
+      viewMods();
+    } catch (e) { alert(e.message); }
+  });
+}
+boot();
+})();
+</script>
+</body>
+</html>

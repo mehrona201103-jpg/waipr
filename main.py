@@ -989,10 +989,13 @@ BACKUP_STATUS = "disabled"
 if ROLE == "master" and C.BACKUP_CHAT_ID and BOT_TOKEN:
     from backup import restore as _restore_backup
     BACKUP_STATUS = _restore_backup(BOT_TOKEN, C.BACKUP_CHAT_ID, C.DATA_DIR)
+SHOP_TITLE = C.SHOP_TITLE or "WAIP SHOP"
+SHOP_TITLE_H = escape(SHOP_TITLE)
 store = OrderStorage(DB_PATH)
 store.recover_stuck()
 tenants = None  # TenantManager; создаётся только на мастере
 backup = None  # BackupManager; только на мастере с BACKUP_CHAT_ID
+studio = None  # Studio (сайт автодонатов); только на мастере с STUDIO_BOT_TOKEN
 
 
 def _backup_files():
@@ -1002,6 +1005,9 @@ def _backup_files():
         ("master_orders", DB_PATH, os.path.relpath(DB_PATH, C.DATA_DIR)),
         ("master_tenants", master_tenants, os.path.relpath(master_tenants, C.DATA_DIR)),
     ]
+    studio_db = os.path.join(C.DATA_DIR, "studio", "studio.sqlite3")
+    if os.path.exists(studio_db):
+        out.append(("studio_db", studio_db, os.path.relpath(studio_db, C.DATA_DIR)))
     tdir = Path(C.TENANTS_DIR)
     if tdir.is_dir():
         for d in sorted(tdir.iterdir()):
@@ -1158,7 +1164,7 @@ def subscribe_kb():
 async def create_stars_invoice_link_with_bot(bot: Bot, order: dict) -> str:
     """Ссылка на оплату Telegram Stars (XTR) — средства на баланс бота."""
     stars = max(1, int(order["price"]))
-    title = (order.get("item_title") or "WAIP SHOP")[:32]
+    title = (order.get("item_title") or SHOP_TITLE)[:32]
     description = f"Заказ #{order['id']} · {order.get('nickname') or ''}"[:255]
     prices = [LabeledPrice(label=title[:32], amount=stars)]
     link = await bot.create_invoice_link(
@@ -1489,9 +1495,9 @@ async def home(message: Message, uid: int | None = None):
     is_owner = uid == OWNER_ID
     is_mod = store.is_moderator(uid)
     await message.answer(
-        f"<b>🛒 WAIP SHOP</b>\n\n"
+        f"<b>🛒 {SHOP_TITLE_H}</b>\n\n"
         f"Магазин привилегий сервера.\n"
-        f"Нажми <b>🛒 WAIP SHOP</b> для удобного приложения\n"
+        f"Нажми <b>🛒 {SHOP_TITLE_H}</b> для удобного приложения\n"
         f"или выбери категорию ниже.",
         reply_markup=home_kb(is_owner, is_mod),
     )
@@ -1501,11 +1507,11 @@ async def start_onboarding(message: Message, bot: Bot, uid: int | None = None):
     uid = uid or message.from_user.id
     # Если WebApp настроен — ведём пользователя туда (подписка + ник + магазин внутри)
     if WEBAPP_URL:
-        rows = [[InlineKeyboardButton(text="🛒 Открыть WAIP SHOP", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        rows = [[InlineKeyboardButton(text=f"🛒 Открыть {SHOP_TITLE}", web_app=WebAppInfo(url=WEBAPP_URL))]]
         if APK_DOWNLOAD_URL:
             rows.append([InlineKeyboardButton(text=APK_BUTTON_TITLE, url=APK_DOWNLOAD_URL)])
         await message.answer(
-            f"<b>🛒 WAIP SHOP</b>\n\n"
+            f"<b>🛒 {SHOP_TITLE_H}</b>\n\n"
             f"✨ Нажми кнопку ниже — откроется приложение.\n"
             f"Там проверка подписки, ник и весь магазин с анимациями.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -1514,7 +1520,7 @@ async def start_onboarding(message: Message, bot: Bot, uid: int | None = None):
     if not await is_subscribed(bot, uid):
         ch = f"@{CHANNEL_USERNAME}" if CHANNEL_USERNAME else "наш канал"
         await message.answer(
-            f"<b>Добро пожаловать в WAIP SHOP!</b>\n\n"
+            f"<b>Добро пожаловать в {SHOP_TITLE_H}!</b>\n\n"
             f"Чтобы пользоваться ботом, подпишись на {ch} и нажми кнопку ниже.",
             reply_markup=subscribe_kb(),
         )
@@ -1714,7 +1720,7 @@ async def show_orders(message: Message, uid: int):
 async def show_admin(message: Message, uid: int | None = None):
     is_owner = (uid or message.from_user.id) == OWNER_ID
     await message.answer(
-        f"{em('settings')} <b>Панель WAIP SHOP</b>\n"
+        f"{em('settings')} <b>Панель {SHOP_TITLE_H}</b>\n"
         f"{'Владелец' if is_owner else 'Модератор'}"
         + (ADMIN_HELP if is_owner else ""),
         reply_markup=admin_panel_kb(is_owner),
@@ -2333,7 +2339,7 @@ async def text_handler(message: Message, bot: Bot):
         store.set_nickname(uid, nick, registered=True)
         await message.answer(
             f"{em('check')} Аккаунт <code>{escape(nick)}</code> подтверждён!\n"
-            f"Добро пожаловать в <b>WAIP SHOP</b>.",
+            f"Добро пожаловать в <b>{SHOP_TITLE_H}</b>.",
         )
         await home(message)
         return
@@ -2548,7 +2554,7 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     me = await bot.get_me()
-    global BOT_USERNAME, tenants
+    global BOT_USERNAME, tenants, studio
     BOT_USERNAME = me.username or ""
     if ROLE == "master":
         fernet_key = os.environ.get("WAIP_MASTER_FERNET_KEY", "").strip()
@@ -2564,10 +2570,23 @@ async def main():
                 await tenants.open_session()
                 await tenants.start_all()
                 asyncio.create_task(tenants.commission_loop())
+                studio_token = os.environ.get("STUDIO_BOT_TOKEN", "").strip()
+                if studio_token and studio_token != BOT_TOKEN:
+                    from studio import Studio
+                    studio = Studio(
+                        Path(C.DATA_DIR) / "studio", tenants.fernet, tenants, studio_token, public_base,
+                        os.environ.get("STUDIO_ADMIN_LOGIN", ""), os.environ.get("STUDIO_ADMIN_PASSWORD", ""),
+                        int(os.environ.get("STUDIO_PRICE", "250") or 250),
+                        int(os.environ.get("STUDIO_MOD_PERCENT", "60") or 60),
+                    )
+                    await studio.start()
+                    logging.info("Сайт автодонатов: %s/studio/", public_base)
+                else:
+                    logging.info("Сайт автодонатов выключен (нужен отдельный STUDIO_BOT_TOKEN)")
             except Exception:
                 logging.exception("Не удалось запустить модуль дочерних ботов")
                 tenants = None
-    logging.info("WAIP SHOP @%s", me.username)
+    logging.info("%s @%s", SHOP_TITLE, me.username)
     global backup
     if ROLE == "master":
         if not C.BACKUP_CHAT_ID:
@@ -2622,6 +2641,7 @@ async def main():
             "shop_theme": C.SHOP_THEME,
             "shop_logo_path": C.SHOP_LOGO_PATH,
             "tenant_manager": tenants,
+            "studio": studio,
             "check_game_login": check_game_login,
             # True = после «Я отправил подарок» выдаём сразу (без ручного ok:)
             "auto_grant_stars_gift": False,
@@ -2641,7 +2661,7 @@ async def main():
             try:
                 from aiogram.types import MenuButtonWebApp
                 await bot.set_chat_menu_button(
-                    menu_button=MenuButtonWebApp(text="WAIP SHOP", web_app=WebAppInfo(url=WEBAPP_URL))
+                    menu_button=MenuButtonWebApp(text=SHOP_TITLE[:30], web_app=WebAppInfo(url=WEBAPP_URL))
                 )
             except Exception:
                 logging.exception("set_chat_menu_button failed")

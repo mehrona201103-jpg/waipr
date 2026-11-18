@@ -1,4 +1,5 @@
 (() => {
+  const SHOP = window.SHOP_TITLE || "WAIP SHOP";
   const tg = window.Telegram?.WebApp;
   // Optional custom accent: /webapp/?theme=%23ff5500
   const themeCode = new URLSearchParams(location.search).get("theme") || "";
@@ -105,7 +106,7 @@
       hide($("obLoader"));
       hide($("obActions"));
       hide($("obNick"));
-      $("obStatus").innerHTML = "Открой магазин кнопкой <b>WAIP SHOP</b><br>внутри бота в Telegram";
+      $("obStatus").innerHTML = `Открой магазин кнопкой <b>${escapeHtml(SHOP)}</b><br>внутри бота в Telegram`;
       return;
     }
     show($("onboard"));
@@ -117,7 +118,7 @@
 
     try {
       if (!state.initData) {
-        throw new Error("Приложение открыто вне Telegram. Закрой страницу и открой WAIP SHOP кнопкой «ОТКРЫТЬ МАГАЗИН» в боте.");
+        throw new Error(`Приложение открыто вне Telegram. Закрой страницу и открой ${SHOP} кнопкой «ОТКРЫТЬ МАГАЗИН» в боте.`);
       }
       const data = await api("/api/bootstrap");
       applyBootstrap(data);
@@ -646,7 +647,7 @@
   $("btnShareRef").onclick = () => {
     const link = $("refLink").value;
     const u = "https://t.me/share/url?url=" + encodeURIComponent(link) +
-      "&text=" + encodeURIComponent("Заходи в WAIP SHOP!");
+      "&text=" + encodeURIComponent("Заходи в " + SHOP + "!");
     if (tg?.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank");
   };
   $("btnRefFree").onclick = async () => {
@@ -892,7 +893,7 @@
           const r = job.result || {};
           $("tResult").innerHTML = "";
           const p = document.createElement("p");
-          p.textContent = `Бот @${r.bot_username || ""} работает. Открой его и нажми меню → WAIP SHOP.`;
+          p.textContent = `Бот @${r.bot_username || ""} работает. Открой его и нажми меню → ${r.title || SHOP}.`;
           const btn = document.createElement("button");
           btn.className = "btn btn-primary btn-block";
           btn.type = "button";

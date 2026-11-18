@@ -243,6 +243,10 @@ class TenantManager:
             );
             """
         )
+        try:
+            self.db.execute("ALTER TABLE tenants ADD COLUMN commission_free INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         self.db.commit()
         self.public_base = public_base.rstrip("/")
         self.master_port = master_port
@@ -299,12 +303,12 @@ class TenantManager:
         return {"ok": ok, "checks": checks, "bot_username": me["username"]}
 
     # ── создание магазина (job) ─────────────────────────────────────────────
-    def start_create(self, owner_id: int, raw: dict, logo_b64: str | None) -> str:
+    def start_create(self, owner_id: int, raw: dict, logo_b64: str | None, studio: bool = False) -> str:
         if not self.session:
             raise TenantError("Сервер не готов, попробуй через минуту")
-        if not raw.get("agree"):
+        if not studio and not raw.get("agree"):
             raise TenantError("Нужно принять условия комиссии")
-        if len(self.list_for_owner(owner_id)) >= MAX_TENANTS_PER_USER:
+        if not studio and len(self.list_for_owner(owner_id)) >= MAX_TENANTS_PER_USER:
             raise TenantError(f"Лимит: не больше {MAX_TENANTS_PER_USER} ботов на аккаунт")
         d = normalize_fields(raw)
         logo = None
@@ -320,7 +324,7 @@ class TenantManager:
         job_id = secrets.token_urlsafe(10)
         self.jobs[job_id] = {
             "id": job_id, "owner_id": owner_id, "status": "running", "percent": 0,
-            "logs": [], "error": None, "result": None,
+            "logs": [], "error": None, "result": None, "studio": studio,
         }
         if len(self.jobs) > 200:
             for k in list(self.jobs)[:50]:
@@ -367,6 +371,8 @@ class TenantManager:
                  d["admin_id"], self._enc(d["token"]), self._enc(secret),
                  self._enc(json.dumps(d["db"])), now_iso()),
             )
+            if job.get("studio"):
+                self.db.execute("UPDATE tenants SET commission_free=1 WHERE id=?", (cur.lastrowid,))
             self.db.commit()
             tid = int(cur.lastrowid)
             from config import TENANT_PORT_BASE  # noqa: WPS433
@@ -586,7 +592,7 @@ class TenantManager:
         start, end = monday - timedelta(days=7), monday
         a, b = start.strftime(TIME_FMT), end.strftime(TIME_FMT)
         created = []
-        for t in self.db.execute("SELECT id, admin_id, title FROM tenants WHERE status='active'").fetchall():
+        for t in self.db.execute("SELECT id, admin_id, title FROM tenants WHERE status='active' AND commission_free=0").fetchall():
             revenue = self.db.execute(
                 "SELECT COALESCE(SUM(stars),0) n FROM sales WHERE tenant_id=? AND created_at>=? AND created_at<?",
                 (t["id"], a, b),
@@ -610,7 +616,7 @@ class TenantManager:
         cutoff = (now_dt() - timedelta(days=GRACE_DAYS)).strftime(TIME_FMT)
         rows = self.db.execute(
             "SELECT DISTINCT c.tenant_id FROM commissions c JOIN tenants t ON t.id=c.tenant_id "
-            "WHERE c.status='due' AND c.created_at<? AND t.status='active'", (cutoff,)
+            "WHERE t.commission_free=0 AND c.status='due' AND c.created_at<? AND t.status='active'", (cutoff,)
         ).fetchall()
         return [int(r["tenant_id"]) for r in rows]
 
