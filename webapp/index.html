@@ -181,13 +181,15 @@
       </div>
       <div class="card rates-card">
         <p class="card-label">Курсы</p>
-        <div class="profile-row"><span>Игровая валюта</span><b>100 000 = 50 Stars</b></div>
+        <div class="profile-row"><span>Игровая валюта</span><b id="pfMoneyRate">100 000 валюты</b></div>
+        <div class="profile-row"><span>Курс Telegram Stars</span><b id="pfStarsRate">50 Stars</b></div>
         <div class="profile-row"><span>Минимальная покупка</span><b>100 000 валюты / 50 Stars</b></div>
       </div>
     </section>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="payCrypto" class="hidden" aria-hidden="true"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/webapp/app.js"></script>
 </body>
 </html>

@@ -22,8 +22,8 @@ STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 # CryptoBot удалён из V3. Оплата только Telegram Stars.
 
 # 4. Канал для обязательной подписки (без @)
-CHANNEL_USERNAME = _env("CHANNEL_USERNAME", "@waiprussia")
-CHANNEL_ID = int(_env("CHANNEL_ID", "-1004323576792"))
+CHANNEL_USERNAME = _env("CHANNEL_USERNAME", "waiprussia")
+CHANNEL_ID = int(_env("CHANNEL_ID", "4323576792"))
 
 # 5. Web App — HTTPS URL (обязательно для Mini App)
 WEBAPP_URL = _env("WEBAPP_URL", "https://waip.onrender.com")
@@ -33,7 +33,7 @@ WEBAPP_PORT = 8080
 # 6. APK игры (прямой link на файл релиза GitHub)
 # Пример: https://github.com/USER/REPO/releases/download/v1.0/game.apk
 # latest:  https://github.com/USER/REPO/releases/latest/download/game.apk
-APK_DOWNLOAD_URL = "https://github.com/mehrona201103-jpg/waip/releases/download/waip/waiprussia.apk"
+APK_DOWNLOAD_URL = "https://github.com/USER/REPO/releases/latest/download/game.apk"
 APK_BUTTON_TITLE = "Скачать игру"
 
 # Премиум-эмодзи в сообщениях бота (обычно False)

@@ -53,6 +53,7 @@
 
   function toast(msg) {
     const el = $("toast");
+    if (!el) return;
     el.textContent = msg;
     show(el);
     clearTimeout(toast._t);
@@ -81,6 +82,9 @@
   }
 
   async function api(path, opts = {}) {
+    if (!state.initData) {
+      throw new Error("Нет данных Telegram. Открой магазин через кнопку Web App в боте, не через обычную ссылку.");
+    }
     const headers = Object.assign(
       { "Content-Type": "application/json", "X-Telegram-Init-Data": state.initData },
       opts.headers || {}
@@ -101,6 +105,9 @@
     hide($("obNick"));
 
     try {
+      if (!state.initData) {
+        throw new Error("Приложение открыто вне Telegram. Закрой страницу и открой WAIP SHOP кнопкой «ОТКРЫТЬ МАГАЗИН» в боте.");
+      }
       const data = await api("/api/bootstrap");
       applyBootstrap(data);
 
