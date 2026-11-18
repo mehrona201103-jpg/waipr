@@ -558,9 +558,12 @@ def create_app(ctx: dict) -> web.Application:
         return web.json_response({"ok": True})
 
     async def index(request: web.Request):
+        prefix = request.headers.get("X-Forwarded-Prefix", "")  # /t/<id> у дочернего магазина
         if request.path == "/webapp":
-            raise web.HTTPFound("/webapp/")
+            raise web.HTTPFound(prefix + "/webapp/")
         page = (WEBAPP_DIR / "index.html").read_text(encoding="utf-8")
+        # База для относительных ссылок (style.css, app.js, логотип), иначе страница открывается без стилей
+        page = page.replace("<head>", f'<head>\n  <base href="{prefix}/webapp/" />', 1)
         title = ctx.get("shop_title") or "WAIP SHOP"
         if title != "WAIP SHOP":
             page = page.replace("WAIP SHOP", html.escape(title))

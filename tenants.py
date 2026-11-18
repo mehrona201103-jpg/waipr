@@ -548,6 +548,7 @@ class TenantManager:
             url += "?" + request.query_string
         headers = {k: v for k, v in request.headers.items()
                    if k.lower() in ("content-type", "x-telegram-init-data", "accept")}
+        headers["X-Forwarded-Prefix"] = f"/t/{tid}"
         body = await request.read()
         try:
             async with self.session.request(

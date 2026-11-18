@@ -98,6 +98,16 @@
 
   /* ── Onboarding ── */
   async function runOnboarding() {
+    if (!state.initData) {
+      // Открыто обычной ссылкой в браузере — данных Telegram нет
+      show($("onboard"));
+      hide($("shop"));
+      hide($("obLoader"));
+      hide($("obActions"));
+      hide($("obNick"));
+      $("obStatus").innerHTML = "Открой магазин кнопкой <b>WAIP SHOP</b><br>внутри бота в Telegram";
+      return;
+    }
     show($("onboard"));
     hide($("shop"));
     $("obStatus").textContent = "Проверяем доступ…";
