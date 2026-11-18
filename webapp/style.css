@@ -318,3 +318,32 @@ html, body {
   max-width: calc(100% - 32px); text-align: center; font-size: 0.9rem;
 }
 .toast:not(.hidden) { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── Заметные кнопки и иконки ── */
+.item-card {
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  box-shadow: 0 4px 18px rgba(124, 58, 237, 0.18);
+  cursor: pointer;
+}
+.item-card:active { transform: scale(0.97); }
+.item-icon {
+  background: linear-gradient(135deg, #a855f7, #7c3aed);
+  color: #fff;
+  border-radius: 14px;
+  box-shadow: 0 0 16px rgba(168, 85, 247, 0.55);
+}
+.item-card .item-price { color: #fff; font-weight: 700; }
+.btn-primary {
+  background: linear-gradient(135deg, #a855f7, #7c3aed);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 6px 20px rgba(124, 58, 237, 0.5);
+}
+.btn-primary:disabled { opacity: 0.45; box-shadow: none; }
+.btn-outline { border: 1.5px solid var(--purple); color: #fff; }
+.pay-method { border: 1.5px solid rgba(168, 85, 247, 0.55); }
+.tab.active { color: #fff; text-shadow: 0 0 12px var(--purple); }
+.ref-bar { height: 10px; border-radius: 6px; background: rgba(255,255,255,.08); margin: 8px 0; overflow: hidden; }
+.ref-bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #34d399, #a855f7); transition: width .5s var(--ease); }
+.ref-card .input, .ref-card select { margin: 8px 0; width: 100%; }
+.ref-card .btn, .daily-card .btn { margin-top: 8px; }

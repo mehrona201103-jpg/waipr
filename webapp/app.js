@@ -31,6 +31,9 @@
     starsPerUsd: 50,
     moneyPerUsd: 100000,
     moneyMinUsd: 1,
+    moneyMinUnits: 100000,
+    ref: null,
+    daily: null,
     channelUrl: null,
     apkUrl: null,
     pendingOrderId: null,
@@ -130,6 +133,9 @@
     state.starsPerUsd = data.stars_per_usd || 50;
     state.moneyPerUsd = data.money_per_usd || 100000;
     state.moneyMinUsd = data.money_min_usd || 1;
+    state.moneyMinUnits = data.money_min_units || 100000;
+    state.ref = data.ref || null;
+    state.daily = data.daily || null;
     state.channelUrl = data.channel_url;
     state.apkUrl = data.apk_url;
     $("payStarsHint").textContent = `Авто · ${state.starsPerUsd} Stars = 1 USD`;
@@ -230,7 +236,7 @@
         p.classList.toggle("active", p.id === "tab-" + b.dataset.tab);
       });
       if (b.dataset.tab === "orders") loadOrders();
-      if (b.dataset.tab === "profile") renderProfile();
+      if (b.dataset.tab === "profile") { renderProfile(); refreshProfileData(); }
       if (b.dataset.tab === "catalog") showView("cats");
     })
   );
@@ -328,32 +334,33 @@
     });
   }
 
-  /* ── Custom money ── */
-  function syncMoneyFromUsd() {
-    const usd = Math.max(state.moneyMinUsd, Number($("moneyUsd").value) || state.moneyMinUsd);
-    $("moneyUsd").value = usd;
-    $("moneyUnits").value = Math.round(usd * state.moneyPerUsd);
-    updateMoneyPreview();
+  /* ── Custom money: вводишь количество валюты, цена считается сама ── */
+  function moneyUnits() {
+    return Math.floor(Number(String($("moneyUnits").value).replace(/\s/g, "")) || 0);
   }
-  function syncMoneyFromUnits() {
-    let units = Math.max(state.moneyPerUsd * state.moneyMinUsd, Number($("moneyUnits").value) || 0);
-    units = Math.round(units / 1000) * 1000;
-    const usd = Math.max(state.moneyMinUsd, units / state.moneyPerUsd);
-    $("moneyUnits").value = Math.round(usd * state.moneyPerUsd);
-    $("moneyUsd").value = Math.round(usd * 100) / 100;
-    updateMoneyPreview();
+  function moneyUsd(units) {
+    return Math.max(0.01, Math.ceil((units * 100) / state.moneyPerUsd) / 100);
   }
   function updateMoneyPreview() {
-    const usd = Math.max(state.moneyMinUsd, Number($("moneyUsd").value) || state.moneyMinUsd);
-    const units = Math.round(usd * state.moneyPerUsd);
-    $("moneyPreview").textContent =
-      `${fmtNum(units)} валюты = $${usd} = ${fmtNum(starsOf(usd))} Stars`;
+    const units = moneyUnits();
+    const ok = units >= state.moneyMinUnits;
+    const usd = moneyUsd(units);
+    $("moneyUsd").value = units > 0 ? usd : "";
+    $("moneyPreview").textContent = ok
+      ? `${fmtNum(units)} валюты = $${usd} = ${fmtNum(starsOf(usd))} Stars`
+      : `Минимум ${fmtNum(state.moneyMinUnits)} валюты`;
+    $("btnMoneyPay").disabled = !ok;
   }
-  $("moneyUsd").addEventListener("input", syncMoneyFromUsd);
-  $("moneyUnits").addEventListener("input", syncMoneyFromUnits);
+  $("moneyUsd").readOnly = true;
+  $("moneyUnits").min = state.moneyMinUnits;
+  $("moneyUnits").addEventListener("input", updateMoneyPreview); // не трогаем ввод — можно печатать любое число
   $("btnMoneyPay").onclick = () => {
-    const usd = Math.max(state.moneyMinUsd, Number($("moneyUsd").value) || state.moneyMinUsd);
-    const units = Math.round(usd * state.moneyPerUsd);
+    const units = moneyUnits();
+    if (units < state.moneyMinUnits) {
+      toast("Минимум " + fmtNum(state.moneyMinUnits));
+      return;
+    }
+    const usd = moneyUsd(units);
     openPay({
       id: "money_custom",
       title: `${fmtNum(units)} игровой валюты`,
@@ -390,8 +397,7 @@
     };
     if (state.product.custom || state.product.id === "money_custom") {
       body.product_id = "money_custom";
-      body.units = state.product.units;
-      body.usd = state.product.price;
+      body.units = state.product.units; // цену сервер считает сам
     } else {
       body.product_id = state.product.id;
     }
@@ -557,6 +563,7 @@
     $("pfSkin").textContent = p?.skin ?? "—";
     $("pfMoney").textContent = p?.money != null ? fmtNum(p.money) : "—";
 
+    renderRefDaily();
     if (nick) {
       show($("btnLogout"));
       hide($("switchBox"));
@@ -567,6 +574,88 @@
       $("switchHint").textContent = "Введи игровой ник, чтобы войти. Подписка не нужна.";
     }
   }
+
+  function renderRefDaily() {
+    const r = state.ref;
+    if (r) {
+      $("refPct").textContent = "+" + r.percent + "%";
+      $("refCount").textContent = r.refs;
+      $("refBonus").textContent = r.bonus + "%";
+      $("refBar").style.width = Math.min(100, r.bonus) + "%";
+      $("refLink").value = r.link || "";
+      if (r.bonus >= 100) {
+        const sel = $("refFreeSel");
+        sel.innerHTML = "";
+        Object.values(state.catalog).forEach((sec) =>
+          (sec.products || []).forEach((p) => {
+            const o = document.createElement("option");
+            o.value = p.id;
+            o.textContent = p.title;
+            sel.appendChild(o);
+          })
+        );
+        show($("refFree"));
+      } else {
+        hide($("refFree"));
+      }
+    }
+    const d = state.daily;
+    if (d) {
+      const left = d.left || 0;
+      $("btnDaily").disabled = left > 0;
+      $("btnDaily").textContent = left > 0 ? "Следующий бонус через " + fmtLeft(left) : "Забрать +" + fmtNum(d.amount);
+    }
+  }
+  function fmtLeft(s) {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return h ? `${h} ч ${m} мин` : `${Math.max(1, m)} мин`;
+  }
+  async function refreshProfileData() {
+    try {
+      const data = await api("/api/bootstrap");
+      state.ref = data.ref || state.ref;
+      state.daily = data.daily || state.daily;
+      state.me = data.me || state.me;
+      renderProfile();
+    } catch (_) {}
+  }
+  $("btnDaily").onclick = async () => {
+    $("btnDaily").disabled = true;
+    try {
+      const data = await api("/api/daily", { method: "POST", body: "{}" });
+      state.daily = { amount: data.amount, left: data.left };
+      toast("+" + fmtNum(data.amount) + " валюты!");
+      try { tg?.HapticFeedback?.notificationOccurred("success"); } catch (_) {}
+      refreshProfileData();
+    } catch (e) {
+      toast(e.message || "Ошибка");
+      refreshProfileData();
+    }
+  };
+  $("btnCopyRef").onclick = async () => {
+    const link = $("refLink").value;
+    try { await navigator.clipboard.writeText(link); }
+    catch (_) { $("refLink").select(); document.execCommand?.("copy"); }
+    toast("Ссылка скопирована");
+  };
+  $("btnShareRef").onclick = () => {
+    const link = $("refLink").value;
+    const u = "https://t.me/share/url?url=" + encodeURIComponent(link) +
+      "&text=" + encodeURIComponent("Заходи в WAIP SHOP!");
+    if (tg?.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank");
+  };
+  $("btnRefFree").onclick = async () => {
+    $("btnRefFree").disabled = true;
+    try {
+      await api("/api/ref_claim", { method: "POST", body: JSON.stringify({ product_id: $("refFreeSel").value }) });
+      toast("Бесплатный товар выдаётся!");
+      refreshProfileData();
+    } catch (e) {
+      toast(e.message || "Ошибка");
+    } finally {
+      $("btnRefFree").disabled = false;
+    }
+  };
 
   $("btnLogout").onclick = async () => {
     $("btnLogout").disabled = true;

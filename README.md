@@ -69,3 +69,15 @@ python3 main.py
 - Start command: `python main.py`; порт берётся из переменной `PORT` автоматически.
 - Секреты задавай в Environment: `BOT_TOKEN`, `OWNER_ID`, `GAME_DB_PASSWORD` и т.д. (см. config.py).
 - Запускай ТОЛЬКО один экземпляр бота (иначе TelegramConflictError).
+
+## Новое
+- **Рефералы**: ссылка в профиле (бот и Web App). +5% рефереру за каждое оплаченное пополнение друга, 100% = любой товар бесплатно.
+- **Бонус дня**: 1 000 000 валюты раз в 24 ч (`DAILY_BONUS_*` в config.py).
+- **Валюта**: любое количество от `MONEY_MIN_UNITS` (100 000), без верхнего лимита; цена по курсу считается сама.
+- **Секретные команды (только владелец)**: `/giveadm Ник Уровень`, `/give cash Ник Сумма`, `/give donate Ник Сумма` (поле `GAME_DONATE_COLUMN`).
+
+## Хостинг — важно
+- **Render Free засыпает** через ~15 мин без запросов: бот перестанет отвечать. Бот сам пингует `RENDER_EXTERNAL_URL/health` каждые 10 мин; дополнительно можно настроить UptimeRobot на `/health`.
+- **Диск Render Free стирается при каждом деплое/рестарте** → пропадут `orders.sqlite3` (заказы, модераторы, промокоды, рефералы, бонусы). Решение: платный Persistent Disk и переменная `DB_PATH=/var/data/orders.sqlite3`, либо VPS (Hetzner / Timeweb / Aeza от ~3–5 $/мес) + systemd.
+- На VPS: `python3 -m venv venv && venv/bin/pip install -r requirements.txt`, сервис systemd с `Restart=always`, HTTPS для Web App — nginx + certbot или Cloudflare Tunnel.
+- MySQL игрового сервера должен разрешать удалённый доступ с IP хостинга (у Render IP меняются — лучше VPS со статичным IP и белым списком).

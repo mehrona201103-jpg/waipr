@@ -123,6 +123,21 @@ def create_app(ctx: dict) -> web.Application:
             return f"https://t.me/{un.lstrip('@')}"
         return None
 
+    def extras(uid: int) -> dict:
+        out = {}
+        try:
+            info = ctx["ref_info"](uid)
+            out["ref"] = {
+                "link": ctx["ref_link"](uid),
+                "bonus": info["bonus"],
+                "refs": info["refs"],
+                "percent": info["percent"],
+            }
+            out["daily"] = {"amount": ctx["daily_amount"], "left": ctx["daily_left"](uid)}
+        except Exception:
+            logging.exception("extras")
+        return out
+
     async def bootstrap(request: web.Request):
         try:
             user = auth_user(request)
@@ -150,6 +165,8 @@ def create_app(ctx: dict) -> web.Application:
             "stars_per_usd": int(ctx.get("stars_per_usd") or 50),
             "money_per_usd": int(ctx.get("money_per_usd") or 100000),
             "money_min_usd": float(ctx.get("money_min_usd") or 1),
+            "money_min_units": int(ctx.get("money_min_units") or 100000),
+            **extras(uid),
         })
 
     async def check_sub(request: web.Request):
@@ -271,16 +288,16 @@ def create_app(ctx: dict) -> web.Application:
 
         if product_id == "money_custom":
             try:
-                usd = float(body.get("usd") or 0)
+                units = int(body.get("units") or 0)
             except (TypeError, ValueError):
                 return web.json_response({"error": "Неверная сумма"}, status=400)
-            if not math.isfinite(usd) or usd < money_min_usd:
-                return web.json_response({"error": f"Минимум ${money_min_usd}"}, status=400)
-            if usd > 1000:
-                return web.json_response({"error": "Максимум $1000 за раз"}, status=400)
-            usd = round(usd, 2)
-            # Количество валюты считаем на сервере — клиенту не доверяем
-            units = int(round(usd * money_per_usd))
+            min_units = int(ctx.get("money_min_units") or 100000)
+            if units < min_units:
+                return web.json_response({"error": f"Минимум {min_units:,}".replace(",", " ")}, status=400)
+            if units > 10**12:
+                return web.json_response({"error": "Слишком большая сумма"}, status=400)
+            # Цену считаем на сервере по курсу, округляя вверх до цента
+            usd = max(0.01, math.ceil(units * 100 / money_per_usd) / 100)
             item = {
                 "id": "money_custom",
                 "title": f"{units:,} игровой валюты".replace(",", " "),
@@ -484,6 +501,40 @@ def create_app(ctx: dict) -> web.Application:
 
         return web.json_response({"ok": True, "status": store.get(oid)["status"]})
 
+    async def daily(request: web.Request):
+        try:
+            user = auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        uid = int(user["id"])
+        try:
+            amount = await ctx["claim_daily"](uid)
+        except ctx["GrantError"] as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception:
+            logging.exception("daily")
+            return web.json_response({"error": "Ошибка выдачи бонуса"}, status=500)
+        return web.json_response({"ok": True, "amount": amount, "left": ctx["daily_left"](uid)})
+
+    async def ref_claim(request: web.Request):
+        try:
+            user = auth_user(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=401)
+        uid = int(user["id"])
+        body = await read_json(request)
+        pid = body.get("product_id")
+        if not isinstance(pid, str):
+            return web.json_response({"error": "Выбери товар"}, status=400)
+        try:
+            oid = await ctx["claim_free"](uid, pid)
+        except ctx["GrantError"] as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception:
+            logging.exception("ref_claim")
+            return web.json_response({"error": "Ошибка"}, status=500)
+        return web.json_response({"ok": True, "order_id": oid, **extras(uid)})
+
     async def health(_request: web.Request):
         return web.json_response({"ok": True})
 
@@ -503,6 +554,8 @@ def create_app(ctx: dict) -> web.Application:
     app.router.add_post("/api/order", order_create)
     app.router.add_get("/api/order_status", order_status)
     app.router.add_post("/api/stars_confirm", stars_confirm)
+    app.router.add_post("/api/daily", daily)
+    app.router.add_post("/api/ref_claim", ref_claim)
     app.router.add_get("/health", health)
     return app
 

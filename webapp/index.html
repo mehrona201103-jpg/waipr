@@ -85,7 +85,7 @@
           <div class="row-inputs">
             <div class="field">
               <label>Игровая валюта</label>
-              <input id="moneyUnits" class="input" type="number" min="100000" step="100000" placeholder="100000" />
+              <input id="moneyUnits" class="input" type="number" min="100000" step="1" placeholder="от 100000" />
             </div>
             <div class="field">
               <label>USD</label>
@@ -158,6 +158,25 @@
         <div class="profile-row"><span>Админ</span><b id="pfAdmin">—</b></div>
         <div class="profile-row"><span>Скин</span><b id="pfSkin">—</b></div>
         <div class="profile-row"><span>Валюта</span><b id="pfMoney">—</b></div>
+      </div>
+      <div class="card daily-card">
+        <p class="card-label">Бонус дня</p>
+        <p class="muted" id="dailyHint">Раз в 24 часа — бесплатная игровая валюта.</p>
+        <button id="btnDaily" class="btn btn-primary btn-block" type="button">Забрать бонус</button>
+      </div>
+      <div class="card ref-card">
+        <p class="card-label">Рефералы</p>
+        <p class="muted">За каждое пополнение друга — <b id="refPct">+5%</b> бонуса. При 100% — товар бесплатно.</p>
+        <div class="profile-row"><span>Приглашено</span><b id="refCount">0</b></div>
+        <div class="ref-bar"><i id="refBar"></i></div>
+        <div class="profile-row"><span>Бонус</span><b id="refBonus">0%</b></div>
+        <input id="refLink" class="input" readonly />
+        <button id="btnCopyRef" class="btn btn-outline btn-block" type="button">Скопировать ссылку</button>
+        <button id="btnShareRef" class="btn btn-primary btn-block" type="button">Поделиться</button>
+        <div id="refFree" class="hidden">
+          <select id="refFreeSel" class="input"></select>
+          <button id="btnRefFree" class="btn btn-primary btn-block" type="button">Забрать бесплатно (100%)</button>
+        </div>
       </div>
       <div class="card account-switch">
         <p class="card-label">Игровой аккаунт</p>

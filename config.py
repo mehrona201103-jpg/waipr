@@ -20,7 +20,7 @@ PAYMENT_DETAILS = "@mukhammad_im"
 STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 
 # 3. CryptoBot API Token (от @CryptoBot → Crypto Pay → Create App)
-CRYPTOBOT_TOKEN = _env("CRYPTOBOT_TOKEN", "673280:AAtKp0AfwtMHMgnOmxdkMxcaew5sUKyMLsi")
+CRYPTOBOT_TOKEN = _env("CRYPTOBOT_TOKEN", "680189:AA5RlEvQTW9TRoOxdUjtmJhIpBNUBW53ZqY")
 
 # 4. Канал для обязательной подписки (без @)
 CHANNEL_USERNAME = "@waiprussia"
@@ -45,8 +45,17 @@ PREMIUM_EMOJI = False
 # 1 USD = MONEY_PER_USD игровой валюты
 STARS_PER_USD = 50
 MONEY_PER_USD = 100_000
-# Минимальная сумма покупки валюты в USD
-MONEY_MIN_USD = 1
+# Минимальная покупка валюты (в игровой валюте). Максимума нет.
+# Цена считается сама: units / MONEY_PER_USD (USD) → Stars.
+MONEY_MIN_UNITS = 100_000
+
+# Реферальная программа: +REF_PERCENT% рефереру за каждое оплаченное пополнение друга.
+# При 100% — любой товар бесплатно.
+REF_PERCENT = 5
+
+# Ежедневный бонус валюты (раз в DAILY_BONUS_HOURS часов)
+DAILY_BONUS_MONEY = 1_000_000
+DAILY_BONUS_HOURS = 24
 
 # 8. Хеш пароля в игровой БД
 # plain | md5 | sha1 | sha256 | double_md5 | whirlpool
@@ -72,6 +81,7 @@ GAME_ADMIN_COLUMN = "admin"
 GAME_MONEY_COLUMN = "money"
 GAME_SKIN_COLUMN = "skin"
 GAME_PASSWORD_COLUMN = "password"
+GAME_DONATE_COLUMN = "rub"  # для /give donate (если такого поля нет — команда вернёт ошибку)
 
 # 10. Прайс-лист (price — в USD; Stars = price * STARS_PER_USD)
 CATALOG = {

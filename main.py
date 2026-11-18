@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -17,7 +18,7 @@ import string
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -25,7 +26,7 @@ import config as C
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -58,14 +59,23 @@ APK_BUTTON_TITLE = getattr(C, "APK_BUTTON_TITLE", "📥 Скачать игру 
 CHANNEL_USERNAME = (getattr(C, "CHANNEL_USERNAME", "") or "").lstrip("@")
 CHANNEL_ID = int(getattr(C, "CHANNEL_ID", 0) or 0)
 PREMIUM = bool(getattr(C, "PREMIUM_EMOJI", False))
-DB_PATH = str(BASE / "orders.sqlite3")
+DB_PATH = os.environ.get("DB_PATH") or str(BASE / "orders.sqlite3")
+try:
+    Path(DB_PATH).resolve().parent.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+BOT_USERNAME = ""  # заполняется в main()
 CATALOG = C.CATALOG
 
 ALLOWED_KINDS = ("level", "admin", "money", "skin", "password")
 
 STARS_PER_USD = int(getattr(C, "STARS_PER_USD", 50) or 50)
 MONEY_PER_USD = int(getattr(C, "MONEY_PER_USD", 100_000) or 100_000)
-MONEY_MIN_USD = float(getattr(C, "MONEY_MIN_USD", 1) or 1)
+MONEY_MIN_UNITS = int(getattr(C, "MONEY_MIN_UNITS", 100_000) or 100_000)
+MONEY_MIN_USD = MONEY_MIN_UNITS / MONEY_PER_USD
+REF_PERCENT = int(getattr(C, "REF_PERCENT", 5) or 5)
+DAILY_BONUS_MONEY = int(getattr(C, "DAILY_BONUS_MONEY", 1_000_000) or 1_000_000)
+DAILY_BONUS_HOURS = int(getattr(C, "DAILY_BONUS_HOURS", 24) or 24)
 PASSWORD_HASH = (getattr(C, "PASSWORD_HASH", "md5") or "md5").strip().lower()
 
 PRODUCTS: dict[str, dict] = {}
@@ -141,6 +151,28 @@ def money_from_usd(usd: float) -> int:
     return int(round(float(usd) * MONEY_PER_USD))
 
 
+def usd_for_units(units: int) -> float:
+    """Цена в USD за units валюты (округление вверх до цента)."""
+    return max(0.01, math.ceil(int(units) * 100 / MONEY_PER_USD) / 100)
+
+
+def money_item(units: int) -> dict:
+    return {
+        "id": "money_custom",
+        "title": f"{units:,} игровой валюты".replace(",", " "),
+        "kind": "money",
+        "units": units,
+        "price": usd_for_units(units),
+        "category": "money",
+    }
+
+
+def fmt_left(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    h, m = seconds // 3600, (seconds % 3600) // 60
+    return f"{h} ч {m} мин" if h else f"{max(1, m)} мин"
+
+
 def usd_from_money(units: int) -> float:
     return round(float(units) / MONEY_PER_USD, 4)
 
@@ -159,6 +191,7 @@ class GameConfig:
     money_col: str
     skin_col: str
     password_col: str
+    donate_col: str = "donate"
 
     def check(self):
         for x in (
@@ -199,6 +232,47 @@ def grant_sql(order: dict, cfg: GameConfig, new_password: str | None = None):
     if kind == "admin":
         return f"UPDATE {table} SET {col}=GREATEST({col}, %s) WHERE {nick}=%s", (amount, order["nickname"])
     return f"UPDATE {table} SET {col}={col}+%s WHERE {nick}=%s", (amount, order["nickname"])
+
+
+def game_update(cfg: GameConfig, attr: str, nickname: str, amount: int, mode: str = "add") -> None:
+    """Прямое изменение поля игрока: mode='add' (+=) или 'set' (=). attr — имя поля GameConfig."""
+    cfg.check()
+    col = identifier(getattr(cfg, attr))
+    table, nick = identifier(cfg.table), identifier(cfg.nickname_col)
+    try:
+        import mysql.connector
+    except ImportError as exc:
+        raise GrantError("Установи mysql-connector-python") from exc
+    connection = None
+    try:
+        connection = mysql.connector.connect(
+            host=cfg.host, port=cfg.port, user=cfg.user, password=cfg.password,
+            database=cfg.database, connection_timeout=10, allow_local_infile=False,
+            autocommit=False, use_pure=True,
+        )
+        cur = connection.cursor(buffered=True)
+        cur.execute(f"SELECT {nick} FROM {table} WHERE {nick}=%s FOR UPDATE", (nickname,))
+        rows = cur.fetchall()
+        if not rows:
+            raise GrantError(f"Аккаунт {nickname} не найден в игровой базе")
+        if len(rows) > 1:
+            raise GrantError("Несколько аккаунтов с таким ником — остановлено")
+        if mode == "set":
+            cur.execute(f"UPDATE {table} SET {col}=%s WHERE {nick}=%s", (int(amount), nickname))
+        else:
+            cur.execute(f"UPDATE {table} SET {col}={col}+%s WHERE {nick}=%s", (int(amount), nickname))
+        connection.commit()
+    except GrantError:
+        if connection:
+            connection.rollback()
+        raise
+    except Exception as exc:
+        if connection:
+            connection.rollback()
+        raise GrantError(f"Ошибка MySQL: {exc}") from exc
+    finally:
+        if connection:
+            connection.close()
 
 
 def grant_to_game(order: dict, cfg: GameConfig) -> str:
@@ -388,6 +462,16 @@ class OrderStorage:
                 product_id TEXT PRIMARY KEY,
                 price INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS referrals (
+                user_id INTEGER PRIMARY KEY,
+                referrer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS referrals_ref ON referrals (referrer_id);
+            CREATE TABLE IF NOT EXISTS daily_bonus (
+                telegram_id INTEGER PRIMARY KEY,
+                last_claim TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS user_profiles (
                 telegram_id INTEGER PRIMARY KEY,
                 game_nickname TEXT,
@@ -408,6 +492,8 @@ class OrderStorage:
         pcols = {r[1] for r in self.db.execute("PRAGMA table_info(user_profiles)").fetchall()}
         if "registered" not in pcols:
             self.db.execute("ALTER TABLE user_profiles ADD COLUMN registered INTEGER DEFAULT 0")
+        if "ref_bonus" not in pcols:
+            self.db.execute("ALTER TABLE user_profiles ADD COLUMN ref_bonus INTEGER DEFAULT 0")
         self.db.commit()
         for private_path in (path, path + "-wal", path + "-shm"):
             if os.path.exists(private_path):
@@ -612,6 +698,7 @@ class OrderStorage:
         discount: int = 0,
         final_price: int | None = None,
         units_override: int | None = None,
+        free: bool = False,
     ):
         """final_price — цена в USD (целое или дробное округляется до 2 знаков → cents/100).
         В БД price хранится как целое число Stars к оплате (USD * STARS_PER_USD).
@@ -628,9 +715,11 @@ class OrderStorage:
             raise ValueError("Есть незавершённый заказ")
         t = now()
         usd = float(final_price if final_price is not None else item["price"])
-        stars = usd_to_stars(usd)
+        stars = 0 if free else usd_to_stars(usd)
         units = int(units_override if units_override is not None else item["units"])
-        status = "awaiting_crypto" if payment_method == "crypto" else "awaiting_stars"
+        status = "processing" if free else (
+            "awaiting_crypto" if payment_method == "crypto" else "awaiting_stars"
+        )
         title = item["title"]
         if item["kind"] == "money" and units_override:
             title = f"{units:,} игровой валюты".replace(",", " ")
@@ -689,12 +778,110 @@ class OrderStorage:
         self.db.commit()
         return cur.rowcount == 1
 
+    # ── рефералы ──
+    def set_referrer(self, uid: int, referrer_id: int) -> bool:
+        if uid == referrer_id:
+            return False
+        with self.db:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO referrals(user_id,referrer_id,created_at) VALUES(?,?,?)",
+                (uid, referrer_id, now()),
+            )
+        return cur.rowcount == 1
+
+    def ref_info(self, uid: int) -> dict:
+        row = self.db.execute(
+            "SELECT COALESCE(ref_bonus,0) b FROM user_profiles WHERE telegram_id=?", (uid,)
+        ).fetchone()
+        cnt = self.db.execute(
+            "SELECT COUNT(*) c FROM referrals WHERE referrer_id=?", (uid,)
+        ).fetchone()["c"]
+        return {"bonus": int(row["b"]) if row else 0, "refs": int(cnt), "percent": REF_PERCENT}
+
+    def _credit_referrer(self, user_id: int) -> None:
+        row = self.db.execute(
+            "SELECT referrer_id FROM referrals WHERE user_id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            return
+        rid = row["referrer_id"]
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO user_profiles(telegram_id,registered,updated_at) VALUES(?,0,?)",
+                (rid, now()),
+            )
+            self.db.execute(
+                "UPDATE user_profiles SET ref_bonus=COALESCE(ref_bonus,0)+? WHERE telegram_id=?",
+                (REF_PERCENT, rid),
+            )
+
+    def take_ref_bonus(self, uid: int) -> bool:
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE user_profiles SET ref_bonus=ref_bonus-100 "
+                "WHERE telegram_id=? AND COALESCE(ref_bonus,0)>=100",
+                (uid,),
+            )
+        return cur.rowcount == 1
+
+    def refund_ref_bonus(self, uid: int) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE user_profiles SET ref_bonus=COALESCE(ref_bonus,0)+100 WHERE telegram_id=?",
+                (uid,),
+            )
+
+    # ── ежедневный бонус ──
+    def daily_left(self, uid: int) -> int:
+        row = self.db.execute(
+            "SELECT last_claim FROM daily_bonus WHERE telegram_id=?", (uid,)
+        ).fetchone()
+        if not row:
+            return 0
+        last = datetime.strptime(row["last_claim"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        end = last + timedelta(hours=DAILY_BONUS_HOURS)
+        return max(0, int((end - datetime.now(timezone.utc)).total_seconds()))
+
+    def daily_try(self, uid: int):
+        """Атомарно резервирует получение бонуса. -> (ok, секунд_до_след, prev)"""
+        left = self.daily_left(uid)
+        if left > 0:
+            return False, left, None
+        row = self.db.execute(
+            "SELECT last_claim FROM daily_bonus WHERE telegram_id=?", (uid,)
+        ).fetchone()
+        prev = row["last_claim"] if row else None
+        with self.db:
+            self.db.execute(
+                "INSERT INTO daily_bonus(telegram_id,last_claim) VALUES(?,?) "
+                "ON CONFLICT(telegram_id) DO UPDATE SET last_claim=excluded.last_claim",
+                (uid, now()),
+            )
+        return True, 0, prev
+
+    def daily_rollback(self, uid: int, prev) -> None:
+        with self.db:
+            if prev is None:
+                self.db.execute("DELETE FROM daily_bonus WHERE telegram_id=?", (uid,))
+            else:
+                self.db.execute("UPDATE daily_bonus SET last_claim=? WHERE telegram_id=?", (prev, uid))
+
     def delivered(self, order_id: int):
+        prev = self.get(order_id)
         self.db.execute(
             "UPDATE orders SET status='delivered',updated_at=?,error_text=NULL WHERE id=?",
             (now(), order_id),
         )
         self.db.commit()
+        # +REF_PERCENT% рефереру за каждое оплаченное пополнение реферала
+        if (
+            prev and prev["status"] != "delivered" and int(prev["price"]) > 0
+            and prev.get("payment_method") != "free"
+        ):
+            try:
+                self._credit_referrer(prev["telegram_id"])
+            except Exception:
+                logging.exception("credit referrer")
 
     def reject(self, order_id: int):
         cur = self.db.execute(
@@ -789,8 +976,9 @@ def home_kb(owner: bool = False, is_mod: bool = False):
     if WEBAPP_URL:
         rows.append((
             InlineKeyboardButton(
-                text="🛒 WAIP SHOP",
+                text="🛒 ОТКРЫТЬ МАГАЗИН",
                 web_app=WebAppInfo(url=WEBAPP_URL),
+                style="primary",
             ),
         ))
     if APK_DOWNLOAD_URL:
@@ -798,14 +986,18 @@ def home_kb(owner: bool = False, is_mod: bool = False):
             InlineKeyboardButton(text=APK_BUTTON_TITLE, url=APK_DOWNLOAD_URL),
         ))
     rows.extend([
-        (button("⭐ ЛВЛ", "cat:level", "star"), button("🛡 Админка", "cat:admin", "lock")),
-        (button("🧍 Скины", "cat:skin", "skin"), button("💰 Валюта", "cat:money", "money")),
+        (button("⭐ Уровни", "cat:level", "star", "primary"),
+         button("🛡 Админка", "cat:admin", "lock", "primary")),
+        (button("🧍 Скины", "cat:skin", "skin", "primary"),
+         button("💰 Валюта", "cat:money", "money", "primary")),
         (button("🔑 Сброс пароля", "cat:password", "key"),),
-        (button("👤 Профиль", "profile", "user"), button("📦 Мои покупки", "my", "paperclip")),
+        (button(f"🎁 Бонус дня +{DAILY_BONUS_MONEY:,}".replace(",", " "), "daily", "star", "success"),),
+        (button("👤 Профиль и рефералы", "profile", "user"),
+         button("📦 Покупки", "my", "paperclip")),
         (button("🎟 Промокод", "promo_enter", "promo"),),
     ])
     if owner or is_mod:
-        rows.append((button("⚙️ Панель", "adm:home", "settings"),))
+        rows.append((button("⚙️ Панель управления", "adm:home", "settings"),))
     return keyboard(*rows)
 
 
@@ -814,10 +1006,21 @@ def section_kb(category: str):
     for p in CATALOG.get(category, {}).get("products") or []:
         price = store.get_price(p["id"])
         stars = usd_to_stars(price)
-        rows.append((button(f"{p['title']} — ${price} / {stars}★", f"buy:{p['id']}", "card"),))
+        rows.append((button(f"🛒 {p['title']} — ${price} / {stars}★", f"buy:{p['id']}", "card", "primary"),))
     if category == "money":
-        rows.append((button("Своя сумма — в Web App", "home", "money"),))
-    rows.append((button("Назад", "home", "home"),))
+        rows.append((button(
+            f"✏️ Своя сумма (от {MONEY_MIN_UNITS:,})".replace(",", " "), "money:custom", "money", "success"
+        ),))
+    rows.append((button("⬅️ Назад", "home", "home"),))
+    return keyboard(*rows)
+
+
+def free_kb():
+    rows = [
+        (button(f"🎁 {p['title']}", f"free:take:{code}", "star", "success"),)
+        for code, p in PRODUCTS.items()
+    ]
+    rows.append((button("⬅️ Назад", "profile", "home"),))
     return keyboard(*rows)
 
 
@@ -1059,6 +1262,7 @@ def game_config() -> GameConfig:
         money_col=store.setting("mysql_money_col", C.GAME_MONEY_COLUMN),
         skin_col=store.setting("mysql_skin_col", getattr(C, "GAME_SKIN_COLUMN", "skin")),
         password_col=store.setting("mysql_password_col", getattr(C, "GAME_PASSWORD_COLUMN", "password")),
+        donate_col=store.setting("mysql_donate_col", getattr(C, "GAME_DONATE_COLUMN", "donate")),
     )
 
 
@@ -1106,6 +1310,67 @@ def mysql_probe(cfg: GameConfig, check_schema: bool = False) -> str:
     return "ok" if check_schema else "connected"
 
 
+def ref_link(uid: int) -> str:
+    return f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
+
+
+def ref_text(uid: int) -> str:
+    info = store.ref_info(uid)
+    pct = min(100, info["bonus"])
+    bar = "▰" * (pct // 10) + "▱" * (10 - pct // 10)
+    link = ref_link(uid)
+    text = (
+        f"👥 <b>Реферальная программа</b>\n"
+        f"За каждое пополнение друга ты получаешь <b>+{REF_PERCENT}%</b> бонуса.\n"
+        f"При <b>100%</b> — любой товар из магазина <b>бесплатно</b>.\n\n"
+        f"Приглашено: <b>{info['refs']}</b>\n"
+        f"Бонус: <b>{info['bonus']}%</b> / 100%\n{bar}\n"
+    )
+    if link:
+        text += f"\nТвоя ссылка:\n<code>{escape(link)}</code>"
+    return text
+
+
+async def claim_free(bot: Bot, uid: int, product_id: str) -> int:
+    """Бесплатный товар за 100% реф-бонуса. Возвращает id заказа."""
+    item = store.product(product_id)
+    if not item:
+        raise GrantError("Товар не найден")
+    nick = store.get_nickname(uid)
+    if not nick or not store.is_registered(uid):
+        raise GrantError("Сначала регистрация /start")
+    if store.active(uid):
+        raise GrantError("Сначала заверши текущий заказ")
+    if not store.take_ref_bonus(uid):
+        raise GrantError("Бонус ещё не достиг 100%")
+    try:
+        order = store.create(uid, nick, product_id, item, payment_method="free", final_price=0, free=True)
+    except Exception as exc:
+        store.refund_ref_bonus(uid)
+        raise GrantError(str(exc)) from exc
+    await fulfill_paid_order(bot, order["id"], source="referral-free")
+    return order["id"]
+
+
+async def claim_daily(uid: int) -> int:
+    """Ежедневный бонус валюты. Возвращает выданную сумму."""
+    nick = store.get_nickname(uid)
+    if not nick or not store.is_registered(uid):
+        raise GrantError("Сначала регистрация /start")
+    ok, left, prev = store.daily_try(uid)
+    if not ok:
+        raise GrantError(f"Следующий бонус через {fmt_left(left)}")
+    try:
+        await asyncio.to_thread(game_update, game_config(), "money_col", nick, DAILY_BONUS_MONEY, "add")
+    except Exception as exc:
+        store.daily_rollback(uid, prev)
+        if isinstance(exc, GrantError):
+            raise
+        raise GrantError(f"Ошибка выдачи: {exc}") from exc
+    return DAILY_BONUS_MONEY
+
+
+waiting_for_money: set[int] = set()
 waiting_for_nickname: dict[int, str] = {}   # product buy flow
 waiting_for_promo: dict[int, bool] = {}
 waiting_pay: dict[int, dict] = {}
@@ -1217,6 +1482,15 @@ async def start_onboarding(message: Message, bot: Bot, uid: int | None = None):
 async def start(message: Message, bot: Bot):
     if message.chat.type != "private":
         return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1 and parts[1].startswith("ref_"):
+        try:
+            rid = int(parts[1][4:])
+            uid = message.from_user.id
+            if rid != uid and not store.is_registered(uid) and store.is_registered(rid):
+                store.set_referrer(uid, rid)
+        except ValueError:
+            pass
     await start_onboarding(message, bot)
 
 
@@ -1227,6 +1501,7 @@ async def cancel_cmd(message: Message):
     waiting_for_promo.pop(uid, None)
     waiting_pay.pop(uid, None)
     waiting_register.discard(uid)
+    waiting_for_money.discard(uid)
     admin_input.pop(uid, None)
     order = store.active(uid)
     if order and order["status"] in ("awaiting_receipt", "awaiting_crypto", "awaiting_stars"):
@@ -1250,6 +1525,115 @@ async def admin_cmd(message: Message):
         await message.answer("Нет доступа.")
         return
     await show_admin(message)
+
+
+ADMIN_HELP = (
+    "\n\n<b>Секретные команды (только владелец):</b>\n"
+    "<code>/giveadm Ник Уровень</code> — выдать админку\n"
+    "<code>/give cash Ник Сумма</code> — выдать валюту\n"
+    "<code>/give donate Ник Сумма</code> — выдать донат-валюту"
+)
+NICK_RE = r"[A-Za-z0-9_\[\]-]{3,24}"
+
+
+@dp.message(Command("giveadm"))
+async def giveadm_cmd(message: Message, command: CommandObject):
+    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
+        return  # секретная команда: остальным не отвечаем
+    args = (command.args or "").split()
+    if len(args) != 2 or not re.fullmatch(NICK_RE, args[0]) or not args[1].isdigit():
+        await message.answer("Формат: <code>/giveadm Ник Уровень</code>")
+        return
+    level = int(args[1])
+    if level > 99:
+        await message.answer("Уровень админки 0–99")
+        return
+    try:
+        await asyncio.to_thread(game_update, game_config(), "admin_col", args[0], level, "set")
+    except GrantError as e:
+        await message.answer(f"{em('warning')} {escape(str(e))}")
+        return
+    await message.answer(f"{em('check')} <code>{escape(args[0])}</code> → админка <b>{level}</b> ур.")
+
+
+@dp.message(Command("give"))
+async def give_cmd(message: Message, command: CommandObject):
+    if message.chat.type != "private" or message.from_user.id != OWNER_ID:
+        return
+    args = (command.args or "").split()
+    kinds = {"cash": ("money_col", "валюты"), "donate": ("donate_col", "доната")}
+    if (
+        len(args) != 3 or args[0].lower() not in kinds
+        or not re.fullmatch(NICK_RE, args[1]) or not args[2].isdigit()
+    ):
+        await message.answer(
+            "Формат:\n<code>/give cash Ник Сумма</code>\n<code>/give donate Ник Сумма</code>"
+        )
+        return
+    amount = int(args[2])
+    if not 0 < amount <= 10**12:
+        await message.answer("Сумма должна быть больше 0")
+        return
+    attr, label = kinds[args[0].lower()]
+    try:
+        await asyncio.to_thread(game_update, game_config(), attr, args[1], amount, "add")
+    except GrantError as e:
+        await message.answer(f"{em('warning')} {escape(str(e))}")
+        return
+    await message.answer(
+        f"{em('check')} <code>{escape(args[1])}</code> +<b>{amount:,}</b> {label}".replace(",", " ")
+    )
+
+
+@dp.callback_query(F.data == "daily")
+async def callback_daily(call: CallbackQuery):
+    try:
+        amount = await claim_daily(call.from_user.id)
+    except GrantError as e:
+        await call.answer(str(e), show_alert=True)
+        return
+    await call.answer("Бонус получен!")
+    await call.message.answer(
+        f"🎁 <b>Ежедневный бонус</b>\n+{amount:,} игровой валюты уже на аккаунте.\n"
+        f"Следующий — через {DAILY_BONUS_HOURS} ч.".replace(",", " ")
+    )
+
+
+@dp.callback_query(F.data == "free:menu")
+async def callback_free_menu(call: CallbackQuery):
+    if store.ref_info(call.from_user.id)["bonus"] < 100:
+        await call.answer("Нужно 100% реф-бонуса", show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer("🎁 <b>Выбери товар бесплатно</b> (спишется 100% бонуса):", reply_markup=free_kb())
+
+
+@dp.callback_query(F.data.startswith("free:take:"))
+async def callback_free_take(call: CallbackQuery, bot: Bot):
+    try:
+        oid = await claim_free(bot, call.from_user.id, call.data.split(":", 2)[2])
+    except GrantError as e:
+        await call.answer(str(e), show_alert=True)
+        return
+    await call.answer("Готово!")
+    await call.message.answer(f"🎁 Бесплатный заказ #{oid} оформлен — выдача идёт автоматически.")
+
+
+@dp.callback_query(F.data == "money:custom")
+async def callback_money_custom(call: CallbackQuery):
+    if not store.is_registered(call.from_user.id):
+        await call.answer("Сначала /start", show_alert=True)
+        return
+    if store.active(call.from_user.id):
+        await call.answer("Уже есть активный заказ", show_alert=True)
+        return
+    await call.answer()
+    waiting_for_money.add(call.from_user.id)
+    await call.message.answer(
+        f"💰 Отправь количество валюты числом — от <b>{MONEY_MIN_UNITS:,}</b> и выше "
+        f"(без верхнего лимита).\nЦена посчитается по курсу: 1 USD = {MONEY_PER_USD:,}.\n"
+        f"/cancel — отмена.".replace(",", " ")
+    )
 
 
 async def show_orders(message: Message, uid: int):
@@ -1277,7 +1661,8 @@ async def show_admin(message: Message, uid: int | None = None):
     is_owner = (uid or message.from_user.id) == OWNER_ID
     await message.answer(
         f"{em('settings')} <b>Панель WAIP SHOP</b>\n"
-        f"{'Владелец' if is_owner else 'Модератор'}",
+        f"{'Владелец' if is_owner else 'Модератор'}"
+        + (ADMIN_HELP if is_owner else ""),
         reply_markup=admin_panel_kb(is_owner),
     )
 
@@ -1378,7 +1763,16 @@ async def callback_profile(call: CallbackQuery):
             )
         else:
             text += "Не удалось получить данные с сервера."
-    await call.message.answer(text, reply_markup=home_kb())
+    text += "\n\n" + ref_text(uid)
+    extra_rows = []
+    if store.ref_info(uid)["bonus"] >= 100:
+        extra_rows.append((button("🎁 Забрать товар бесплатно (100%)", "free:menu", "star", "success"),))
+    kb = home_kb(uid == OWNER_ID, store.is_moderator(uid))
+    await call.message.answer(
+        text,
+        reply_markup=keyboard(*extra_rows, *kb.inline_keyboard),
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
 
 
 @dp.callback_query(F.data == "promo_enter")
@@ -1461,7 +1855,15 @@ async def callback_pay_method(call: CallbackQuery):
     if not data or data.get("code") != code:
         await call.answer("Сессия устарела, начни заново", show_alert=True)
         return
-    item = store.product(code)
+    units_override = None
+    if code == "money_custom":
+        units_override = int(data.get("units") or 0)
+        if units_override < MONEY_MIN_UNITS:
+            await call.answer(f"Минимум {MONEY_MIN_UNITS}", show_alert=True)
+            return
+        item = money_item(units_override)
+    else:
+        item = store.product(code)
     if not item:
         await call.answer("Товар не найден", show_alert=True)
         return
@@ -1479,7 +1881,7 @@ async def callback_pay_method(call: CallbackQuery):
         order = store.create(
             call.from_user.id, data["nick"], code, item,
             payment_method=method, promo_code=promo_code,
-            discount=discount, final_price=final_price,
+            discount=discount, final_price=final_price, units_override=units_override,
         )
         if promo_code:
             store.use_promo(promo_code)
@@ -1907,6 +2309,32 @@ async def text_handler(message: Message, bot: Bot):
         await home(message)
         return
 
+    # --- своя сумма валюты ---
+    if uid in waiting_for_money:
+        digits = re.sub(r"[\s_,.]", "", text)
+        if not digits.isdigit():
+            await message.answer("Отправь число, например <code>250000</code>")
+            return
+        units = int(digits)
+        if units < MONEY_MIN_UNITS:
+            await message.answer(f"Минимум {MONEY_MIN_UNITS:,}".replace(",", " "))
+            return
+        if units > 10**12:
+            await message.answer("Слишком большое число")
+            return
+        waiting_for_money.discard(uid)
+        nick = store.get_nickname(uid)
+        usd = usd_for_units(units)
+        promo = (waiting_pay.get(uid) or {}).get("promo")
+        waiting_pay[uid] = {"code": "money_custom", "nick": nick, "units": units, "promo": promo}
+        await message.answer(
+            f"{em('money')} <b>{units:,} игровой валюты</b>\n".replace(",", " ")
+            + f"Ник: <code>{escape(nick or '—')}</code>\n"
+            f"Цена: <b>${usd}</b> = <b>{usd_to_stars(usd)}★</b>\n\nСпособ оплаты:",
+            reply_markup=pay_method_kb("money_custom"),
+        )
+        return
+
     # --- admin stages ---
     if can_review(uid) and admin_input.get(uid):
         stage = admin_input[uid]
@@ -2122,11 +2550,31 @@ async def crypto_poller(bot: Bot):
         await asyncio.sleep(20)
 
 
+async def keepalive():
+    """Пинг самого себя, чтобы бесплатный хостинг (Render) не усыплял сервис."""
+    url = (os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if not url:
+        return
+
+    def ping():
+        urllib.request.urlopen(url + "/health", timeout=15).read()
+
+    while True:
+        await asyncio.sleep(600)
+        try:
+            await asyncio.to_thread(ping)
+        except Exception:
+            logging.warning("keepalive ping failed")
+
+
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     me = await bot.get_me()
+    global BOT_USERNAME
+    BOT_USERNAME = me.username or ""
     logging.info("WAIP SHOP @%s", me.username)
+    asyncio.create_task(keepalive())
     if CRYPTOBOT_TOKEN:
         asyncio.create_task(crypto_poller(bot))
 
@@ -2162,6 +2610,14 @@ async def main():
             # True = после «Я отправил подарок» выдаём сразу (без ручного ok:)
             "auto_grant_stars_gift": False,
             "asyncio": asyncio,
+            "money_min_units": MONEY_MIN_UNITS,
+            "ref_info": store.ref_info,
+            "ref_link": ref_link,
+            "daily_left": store.daily_left,
+            "daily_amount": DAILY_BONUS_MONEY,
+            "claim_daily": claim_daily,
+            "claim_free": lambda uid, pid: claim_free(bot, uid, pid),
+            "GrantError": GrantError,
         }
         await start_web_server(ctx, WEBAPP_HOST, WEBAPP_PORT)
         if WEBAPP_URL:
