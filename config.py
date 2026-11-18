@@ -12,8 +12,8 @@ def _env(name, default):
 
 
 # 1. Токен от @BotFather
-BOT_TOKEN = _env("BOT_TOKEN", "8878110137:AAFZFjXNJMjRNe6uSVKU7gOrAwT4WgEFWo0")
-OWNER_ID = _env("OWNER_ID", "9292798672")  # задайте свой Telegram ID в переменных окружения
+BOT_TOKEN = _env("BOT_TOKEN", "")
+OWNER_ID = _env("OWNER_ID", "0")  # задайте свой Telegram ID в переменных окружения
 
 # 2. Username для подарков Stars (fallback, если invoice XTR недоступен)
 PAYMENT_DETAILS = "@mukhammad_im"
@@ -22,11 +22,12 @@ STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 # CryptoBot удалён из V3. Оплата только Telegram Stars.
 
 # 4. Канал для обязательной подписки (без @)
-CHANNEL_USERNAME = _env("CHANNEL_USERNAME", "waiprussia")
-CHANNEL_ID = int(_env("CHANNEL_ID", "4323576792"))
+CHANNEL_USERNAME = _env("CHANNEL_USERNAME", "")
+CHANNEL_ID = int(_env("CHANNEL_ID", "0"))
+CHANNEL_URL = _env("CHANNEL_URL", "")
 
 # 5. Web App — HTTPS URL (обязательно для Mini App)
-WEBAPP_URL = _env("WEBAPP_URL", "https://waip.onrender.com")
+WEBAPP_URL = _env("WEBAPP_URL", "")
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = 8080
 
@@ -64,23 +65,23 @@ DAILY_BONUS_HOURS = 24
 #   40 hex  → sha1
 #   64 hex  → sha256
 #   128 hex → whirlpool
-PASSWORD_HASH = "md5"
+PASSWORD_HASH = _env("PASSWORD_HASH", "md5").strip().lower()
 
 # 9. MySQL игрового сервера
-GAME_DB_HOST = _env("GAME_DB_HOST", "178.130.53.37")
+GAME_DB_HOST = _env("GAME_DB_HOST", "")
 GAME_DB_PORT = int(_env("GAME_DB_PORT", 3306))
-GAME_DB_USER = _env("GAME_DB_USER", "gs365018")
-GAME_DB_PASSWORD = _env("GAME_DB_PASSWORD", "Zy1HZ8OiIVca")
-GAME_DB_NAME = _env("GAME_DB_NAME", "gs365018")
+GAME_DB_USER = _env("GAME_DB_USER", "")
+GAME_DB_PASSWORD = _env("GAME_DB_PASSWORD", "")
+GAME_DB_NAME = _env("GAME_DB_NAME", "")
 
-GAME_ACCOUNT_TABLE = "accounts"
-GAME_NICK_COLUMN = "name"
-GAME_LEVEL_COLUMN = "level"
-GAME_ADMIN_COLUMN = "admin"
-GAME_MONEY_COLUMN = "money"
-GAME_SKIN_COLUMN = "skin"
-GAME_PASSWORD_COLUMN = "password"
-GAME_DONATE_COLUMN = "rub"  # для /give donate (если такого поля нет — команда вернёт ошибку)
+GAME_ACCOUNT_TABLE = _env("GAME_ACCOUNT_TABLE", "accounts")
+GAME_NICK_COLUMN = _env("GAME_NICK_COLUMN", "name")
+GAME_LEVEL_COLUMN = _env("GAME_LEVEL_COLUMN", "level")
+GAME_ADMIN_COLUMN = _env("GAME_ADMIN_COLUMN", "admin")
+GAME_MONEY_COLUMN = _env("GAME_MONEY_COLUMN", "money")
+GAME_SKIN_COLUMN = _env("GAME_SKIN_COLUMN", "skin")
+GAME_PASSWORD_COLUMN = _env("GAME_PASSWORD_COLUMN", "password")
+GAME_DONATE_COLUMN = _env("GAME_DONATE_COLUMN", "donate")  # для /give donate (если такого поля нет — команда вернёт ошибку)
 
 # 10. Прайс-лист (price — в USD; Stars = price * STARS_PER_USD)
 CATALOG = {

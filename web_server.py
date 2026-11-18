@@ -118,6 +118,9 @@ def create_app(ctx: dict) -> web.Application:
             return False
 
     def channel_url():
+        configured = (ctx.get("channel_url") or "").strip()
+        if configured.startswith("https://t.me/"):
+            return configured
         un = ctx.get("channel_username") or ""
         if un:
             return f"https://t.me/{un.lstrip('@')}"

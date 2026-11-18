@@ -58,6 +58,7 @@ APK_DOWNLOAD_URL = (getattr(C, "APK_DOWNLOAD_URL", "") or "").strip()
 APK_BUTTON_TITLE = getattr(C, "APK_BUTTON_TITLE", "📥 Скачать игру (APK)")
 CHANNEL_USERNAME = (getattr(C, "CHANNEL_USERNAME", "") or "").lstrip("@")
 CHANNEL_ID = int(getattr(C, "CHANNEL_ID", 0) or 0)
+CHANNEL_URL = (getattr(C, "CHANNEL_URL", "") or "").strip()
 PREMIUM = bool(getattr(C, "PREMIUM_EMOJI", False))
 DB_PATH = os.environ.get("DB_PATH") or str(BASE / "orders.sqlite3")
 try:
@@ -1395,19 +1396,26 @@ def channel_ref():
 
 
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    # Владелец проекта не должен блокировать сам себя из-за проверки канала.
+    if OWNER_ID and int(user_id) == OWNER_ID:
+        return True
     ref = channel_ref()
     if not ref:
-        return True  # проверка отключена
+        logging.warning("Подписка не проверяется: задайте CHANNEL_ID или CHANNEL_USERNAME в Render")
+        return True
     try:
         member = await bot.get_chat_member(ref, user_id)
-        return member.status in (
-            ChatMemberStatus.MEMBER,
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.CREATOR,
-            ChatMemberStatus.RESTRICTED,
+        status = getattr(member.status, "value", str(member.status)).lower()
+        if status in {"creator", "owner", "administrator", "member"}:
+            return True
+        if status == "restricted":
+            return bool(getattr(member, "is_member", False))
+        return False
+    except Exception as exc:
+        logging.error(
+            "Не удалось проверить подписку user_id=%s channel=%s. Убедитесь, что бот добавлен администратором канала и CHANNEL_ID/CHANNEL_USERNAME указаны верно: %s",
+            user_id, ref, exc,
         )
-    except Exception:
-        logging.exception("is_subscribed")
         return False
 
 
@@ -2603,6 +2611,7 @@ async def main():
             "stars_user": STARS_USER,
             "owner_id": OWNER_ID,
             "channel_username": CHANNEL_USERNAME,
+            "channel_url": CHANNEL_URL,
             "apk_url": APK_DOWNLOAD_URL,
             "stars_per_usd": STARS_PER_USD,
             "money_per_usd": MONEY_PER_USD,
