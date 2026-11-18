@@ -213,24 +213,13 @@ def create_app(ctx: dict) -> web.Application:
         nick = (body.get("nickname") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_\[\]-]{3,24}", nick):
             return web.json_response({"error": "Неверный формат ника"}, status=400)
-        password = body.get("password") if isinstance(body.get("password"), str) else ""
-        if not 1 <= len(password) <= 128:
-            return web.json_response({"error": "Введи игровой пароль"}, status=400)
-        if _too_many(uid):
-            return web.json_response({"error": "Слишком много попыток. Подожди 15 минут"}, status=429)
         try:
-            exists, ok = await ctx["asyncio"].to_thread(
-                ctx["check_game_login"], nick, password, ctx["get_game_config"]()
-            )
+            exists = await ctx["asyncio"].to_thread(ctx["account_exists"], nick, ctx["get_game_config"]())
         except ctx["GrantError"] as e:
             logging.error("register check: %s", e)
             return web.json_response({"error": "Не удалось проверить аккаунт, попробуй позже"}, status=500)
         if not exists:
             return web.json_response({"error": f"Аккаунт «{nick}» не найден в базе сервера"}, status=404)
-        if not ok:
-            _fails.setdefault(uid, []).append(time.time())
-            return web.json_response({"error": "Неверный игровой пароль"}, status=403)
-        _fails.pop(uid, None)
         store.set_nickname(uid, nick, registered=True)
         player = await player_block(nick)
         return web.json_response({

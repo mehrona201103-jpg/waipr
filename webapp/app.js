@@ -220,12 +220,11 @@
     try {
       const data = await api("/api/register", {
         method: "POST",
-        body: JSON.stringify({ nickname: nick, password: $("obPass").value }),
+        body: JSON.stringify({ nickname: nick }),
       });
       state.me = data.me || state.me;
       state.me.nickname = nick;
       state.me.registered = true;
-      $("obPass").value = "";
       hide($("obLoader"));
       $("obStatus").textContent = "Аккаунт подтверждён";
       toast("Добро пожаловать, " + nick);
@@ -694,14 +693,13 @@
     try {
       const data = await api("/api/register", {
         method: "POST",
-        body: JSON.stringify({ nickname: nick, switch: true, password: $("switchPass").value }),
+        body: JSON.stringify({ nickname: nick, switch: true }),
       });
       state.me = data.me || state.me;
       state.me.nickname = nick;
       state.me.registered = true;
       $("userChip").textContent = nick;
       $("switchNick").value = "";
-      $("switchPass").value = "";
       toast("Вошёл как " + nick);
       renderProfile();
       try { tg?.HapticFeedback?.notificationOccurred("success"); } catch (_) {}
