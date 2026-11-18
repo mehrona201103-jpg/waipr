@@ -273,10 +273,8 @@ def create_app(ctx: dict) -> web.Application:
         if not isinstance(product_id, str):
             return web.json_response({"error": "Товар не найден"}, status=404)
         method = body.get("payment_method") or "stars"
-        if method not in ("stars", "crypto"):
-            return web.json_response({"error": "Неверный способ оплаты"}, status=400)
-        if method == "crypto" and not ctx.get("cryptobot_token"):
-            return web.json_response({"error": "CryptoBot не настроен"}, status=400)
+        if method != "stars":
+            return web.json_response({"error": "Доступна только оплата Telegram Stars"}, status=400)
 
         stars_per_usd = int(ctx.get("stars_per_usd") or 50)
         money_per_usd = int(ctx.get("money_per_usd") or 100000)
@@ -341,20 +339,9 @@ def create_app(ctx: dict) -> web.Application:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=409)
 
-        stars = int(order.get("stars") or max(1, round(float(final_usd) * stars_per_usd)))
+        stars = max(50, int(order.get("stars") or math.ceil(float(final_usd) * stars_per_usd)))
         pay_url = None
         invoice_link = None
-
-        if method == "crypto":
-            try:
-                inv = await ctx["asyncio"].to_thread(ctx["create_crypto_invoice"], order)
-                invoice_id = str(inv.get("invoice_id") or inv.get("invoiceId"))
-                pay_url = inv.get("bot_invoice_url") or inv.get("pay_url") or inv.get("payUrl")
-                store.set_crypto_invoice(order["id"], invoice_id)
-            except Exception as e:
-                logging.exception("web crypto")
-                store.cancel(order["id"], uid)
-                return web.json_response({"error": f"CryptoBot: {e}"}, status=502)
 
         if method == "stars":
             create_link = ctx.get("create_stars_invoice_link")

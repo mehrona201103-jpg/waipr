@@ -144,7 +144,7 @@ def hash_password(plain: str) -> str:
 
 
 def usd_to_stars(usd: float) -> int:
-    return max(1, int(round(float(usd) * STARS_PER_USD)))
+    return max(50, int(math.ceil(float(usd) * STARS_PER_USD)))
 
 
 def money_from_usd(usd: float) -> int:
@@ -1285,7 +1285,7 @@ def mysql_probe(cfg: GameConfig, check_schema: bool = False) -> str:
             cur.fetchone()
             if check_schema:
                 for x in (cfg.table, cfg.nickname_col, cfg.level_col, cfg.admin_col,
-                          cfg.money_col, cfg.skin_col, cfg.password_col):
+                          cfg.money_col, cfg.skin_col, cfg.password_col, cfg.donate_col):
                     identifier(x)
                 cur.execute(
                     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
@@ -1296,7 +1296,7 @@ def mysql_probe(cfg: GameConfig, check_schema: bool = False) -> str:
                 if not found:
                     raise GrantError(f"Нет таблицы {cfg.table}")
                 wanted = (cfg.nickname_col, cfg.level_col, cfg.admin_col,
-                          cfg.money_col, cfg.skin_col, cfg.password_col)
+                          cfg.money_col, cfg.skin_col, cfg.password_col, cfg.donate_col)
                 missing = [v for v in wanted if v.lower() not in found]
                 if missing:
                     raise GrantError("Нет столбцов: " + ", ".join(missing))

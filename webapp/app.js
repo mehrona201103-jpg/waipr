@@ -1,5 +1,12 @@
 (() => {
   const tg = window.Telegram?.WebApp;
+  // Optional custom accent: /webapp/?theme=%23ff5500
+  const themeCode = new URLSearchParams(location.search).get("theme") || "";
+  if (/^#[0-9a-fA-F]{6}$/.test(themeCode)) {
+    document.documentElement.style.setProperty("--purple", themeCode);
+    document.documentElement.style.setProperty("--line", themeCode + "66");
+    document.documentElement.style.setProperty("--glow", "0 0 24px " + themeCode + "55");
+  }
   if (tg) {
     tg.ready();
     tg.expand();
@@ -65,12 +72,12 @@
   }
 
   function starsOf(usd) {
-    return Math.max(1, Math.round(Number(usd) * state.starsPerUsd));
+    return Math.max(50, Math.ceil(Number(usd) * state.starsPerUsd));
   }
 
   function priceLine(usd) {
     const s = starsOf(usd);
-    return `$${Number(usd).toFixed(Number(usd) % 1 ? 2 : 0)} · ${fmtNum(s)} Stars`;
+    return `${fmtNum(s)} Stars`;
   }
 
   async function api(path, opts = {}) {
@@ -128,7 +135,7 @@
   function applyBootstrap(data) {
     state.catalog = data.catalog || {};
     state.me = data.me;
-    state.cryptoEnabled = !!data.crypto_enabled;
+    state.cryptoEnabled = false;
     state.starsUser = data.stars_user || "mukhammad_im";
     state.starsPerUsd = data.stars_per_usd || 50;
     state.moneyPerUsd = data.money_per_usd || 100000;
@@ -347,7 +354,7 @@
     const usd = moneyUsd(units);
     $("moneyUsd").value = units > 0 ? usd : "";
     $("moneyPreview").textContent = ok
-      ? `${fmtNum(units)} валюты = $${usd} = ${fmtNum(starsOf(usd))} Stars`
+      ? `${fmtNum(units)} валюты = ${fmtNum(starsOf(usd))} Stars`
       : `Минимум ${fmtNum(state.moneyMinUnits)} валюты`;
     $("btnMoneyPay").disabled = !ok;
   }
@@ -491,7 +498,6 @@
     }
   }
 
-  $("payCrypto").onclick = () => createOrder("crypto");
   $("payStars").onclick = () => createOrder("stars");
 
   $("btnStarsPay").onclick = () => createOrder("stars");

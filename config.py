@@ -13,18 +13,17 @@ def _env(name, default):
 
 # 1. Токен от @BotFather
 BOT_TOKEN = _env("BOT_TOKEN", "8878110137:AAFZFjXNJMjRNe6uSVKU7gOrAwT4WgEFWo0")
-OWNER_ID = _env("OWNER_ID", "9292798672")  # Telegram ID владельца бота
+OWNER_ID = _env("OWNER_ID", "9292798672")  # задайте свой Telegram ID в переменных окружения
 
 # 2. Username для подарков Stars (fallback, если invoice XTR недоступен)
 PAYMENT_DETAILS = "@mukhammad_im"
 STARS_GIFT_USERNAME = "mukhammad_im"  # без @
 
-# 3. CryptoBot API Token (от @CryptoBot → Crypto Pay → Create App)
-CRYPTOBOT_TOKEN = _env("CRYPTOBOT_TOKEN", "680189:AA5RlEvQTW9TRoOxdUjtmJhIpBNUBW53ZqY")
+# CryptoBot удалён из V3. Оплата только Telegram Stars.
 
 # 4. Канал для обязательной подписки (без @)
-CHANNEL_USERNAME = "@waiprussia"
-CHANNEL_ID = -1004323576792
+CHANNEL_USERNAME = _env("CHANNEL_USERNAME", "@waiprussia")
+CHANNEL_ID = int(_env("CHANNEL_ID", "-1004323576792"))
 
 # 5. Web App — HTTPS URL (обязательно для Mini App)
 WEBAPP_URL = _env("WEBAPP_URL", "https://waip.onrender.com")
@@ -41,8 +40,8 @@ APK_BUTTON_TITLE = "Скачать игру"
 PREMIUM_EMOJI = False
 
 # 7. Курсы (цены в каталоге — в USD)
-# 1 USD = STARS_PER_USD Telegram Stars
-# 1 USD = MONEY_PER_USD игровой валюты
+# 100 000 игровой валюты = 50 Telegram Stars; минимальный заказ — 50 Stars.
+# Цены в каталоге задаются в USD как внутренняя единица пересчёта.
 STARS_PER_USD = 50
 MONEY_PER_USD = 100_000
 # Минимальная покупка валюты (в игровой валюте). Максимума нет.
@@ -125,3 +124,7 @@ CATALOG = {
         ],
     },
 }
+
+# Курс покупки донат-валюты (отдельно от RUB и обычной игровой валюты)
+DONATE_PER_10_STARS = 100  # 100 доната = 10 Telegram Stars
+DONATE_MIN_UNITS = 100
